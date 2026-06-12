@@ -103,12 +103,3 @@ The extension creates a `DefaultResourceLoader` at `session_start` with `include
 - Project memory skills (`projects-memory/<project>/skills/`)
 
 This ensures the skill count always matches `/skill:` autocomplete, regardless of where skills are stored.
-
-## File Structure
-
-```
-pi-skill-gate/
-├── index.ts            # Extension entry point
-├── skills-lock.json
-└── README.md
-```
