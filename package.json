@@ -1,0 +1,54 @@
+{
+  "name": "pi-skill-gate",
+  "version": "0.1.0",
+  "description": "Interactive skill visibility manager for pi coding agent — browse, toggle, and invoke skills from a keyboard-driven TUI overlay.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "skill",
+    "skills",
+    "skill-gate",
+    "skill-management",
+    "pi",
+    "coding-agent",
+    "tui",
+    "terminal-ui"
+  ],
+  "license": "MIT",
+  "author": "Cullen Botha <mail@cullen.dev>",
+  "type": "module",
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cullendotdev/pi-skill-gate.git"
+  },
+  "homepage": "https://github.com/cullendotdev/pi-skill-gate#readme",
+  "bugs": {
+    "url": "https://github.com/cullendotdev/pi-skill-gate/issues"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.79.0",
+    "@earendil-works/pi-tui": "^0.79.0",
+    "@types/node": "^22.19.10",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

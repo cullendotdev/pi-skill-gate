@@ -1,0 +1,6 @@
+node_modules/
+*.tgz
+dist/
+.pi/
+.rpiv/
+tmp/
