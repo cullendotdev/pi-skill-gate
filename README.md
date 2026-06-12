@@ -1,13 +1,16 @@
 <div align="center">
 
 # Skill Gate
+
 *Interactive skill visibility manager for pi coding agent*
 
 [Features](#features) • [Installation](#installation) • [Usage](#usage) • [Configuration](#configuration) • [How It Works](#how-it-works)
 
 </div>
 
-Control which skills the model can see with `/skill-gate`. Browse full skill content, toggle visibility on or off, and invoke skills — all from a keyboard-driven overlay. State is persisted across sessions and injected into the system prompt before every agent run.
+Control which skills are injected into the initial system prompt with `/skill-gate`. Browse full skill content, toggle visibility on or off, and invoke skills — all from a keyboard-driven overlay. Skills that are not injected can still be executed manually in chat. State is persisted across sessions and injected into the system prompt before every agent run.
+
+![Pi-skill-gate interactive overlay](https://raw.githubusercontent.com/cullendotdev/pi-skill-gate/refs/heads/main/images/skill-gate-overlay-preview.png)
 
 ## Features
 
@@ -21,18 +24,21 @@ Control which skills the model can see with `/skill-gate`. Browse full skill con
 
 ## Installation
 
-Copy the extension into your pi extensions directory:
+### Via npm (recommended)
+
+Install the package, then let pi discover it:
 
 ```bash
-cp -r pi-skill-gate ~/.pi/agent/extensions/pi-skill-gate
+pi install npm:pi-skill-gate
 ```
 
-Enable it in your pi settings (`~/.pi/agent/settings.json` or `.pi/settings.json`):
+### Manual (local development)
 
-```json
-{
-  "extensions": ["+extensions/pi-skill-gate/index.ts"]
-}
+Clone / copy the extension into your pi extensions directory:
+
+```bash
+git clone https://github.com/cullendotdev/pi-skill-gate.git
+cp -r pi-skill-gate ~/.pi/agent/extensions/pi-skill-gate
 ```
 
 ## Usage
