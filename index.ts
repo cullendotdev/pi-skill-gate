@@ -302,7 +302,7 @@ class SkillDetailOverlay {
   }
 
   // ── render detail column (unbordered — borders added by merge or full-width path) ──
-  private renderDetail(detailW: number): {
+  private renderDetail(detailW: number, subtitleLines: number): {
     descLines: string[];
     bodyLines: string[];
     mdMeta: { bodyLength: number; remaining: number; maxOffset: number; needsScrollbar: boolean; thumbH: number; thumbStart: number; gutterW: number; contentW: number };
@@ -311,8 +311,7 @@ class SkillDetailOverlay {
     const row = this.rows[this.currentIdx]!;
     const padW = Math.max(detailW - 4, 12);
 
-    // ── description section (fixed height to prevent window jumping) ──
-    const DESC_MAX = 6;
+    // ── description section ──
     const descLines: string[] = [];
 
     // Skill name
@@ -334,11 +333,18 @@ class SkillDetailOverlay {
       }
       descLines.push("");
     }
-    while (descLines.length < DESC_MAX) descLines.push("");
-    if (descLines.length > DESC_MAX) descLines.length = DESC_MAX;
 
-    // ── body section ──
-    const remaining = Math.max(0, this.maxBodyLines - 3);
+    // ── budget: ensure total overlay height stays within bounds ──
+    // Total lines = 5 (borders/title/sep/footer) + subtitleLines + descLines + maxBodyLines
+    const OVERLAY_BUDGET = 42; // fits 80% of a typical 50-line terminal with margins
+    const MIN_BODY = 6;        // minimum visible body lines
+    const maxDesc = OVERLAY_BUDGET - 5 - subtitleLines - (MIN_BODY + 3);
+    if (descLines.length > maxDesc) {
+      descLines.length = maxDesc;
+      descLines[maxDesc - 1] = "  " + T.dim("…");
+    }
+    const maxBody = OVERLAY_BUDGET - 5 - subtitleLines - descLines.length;
+    const remaining = Math.max(MIN_BODY, Math.min(this.maxBodyLines - 3, maxBody - 3));
     const body = readSkillBody(row.filePath);
 
     // Loop: render, measure gutter + scroll, adjust contentW, repeat until stable.
@@ -420,7 +426,12 @@ class SkillDetailOverlay {
     const vc = this.rows.filter((r) => !r.disableModelInvocation && r.state === "enabled").length;
     const tc = this.rows.length;
     lines.push(borderLine(" " + T.accent(T.bold(" Skill Gate")) + T.dim(` ── ${vc}/${tc} skills enabled`), innerW, T));
-    lines.push(borderLine(T.muted("  Control which skills the model can see. Enabled skills are injected into the system prompt; disabled skills are hidden."), innerW, T));
+    const subtitleW = innerW - 2; // account for leading spaces + border
+    const subtitle = "Control which skills the model can see. Enabled skills are injected into the system prompt; disabled skills are hidden.";
+    const subtitleLines = wrapText(subtitle, subtitleW);
+    for (const sl of subtitleLines) {
+      lines.push(borderLine(T.muted("  " + sl), innerW, T));
+    }
     lines.push(T.dim("│" + T.dim("─".repeat(innerW)) + "│"));
 
     // ── layout: sidebar (toggleable) + detail ──
@@ -429,7 +440,7 @@ class SkillDetailOverlay {
       const sepW = 1;
       const detailW = innerW - sidebarW - sepW;
 
-      const { descLines, bodyLines, mdMeta } = this.renderDetail(detailW);
+      const { descLines, bodyLines, mdMeta } = this.renderDetail(detailW, subtitleLines.length);
 
       // Body area height = description + prompt header + body + borderline + footer
       const promptHeader = [" " + T.bold("Prompt:"), ""];
@@ -455,7 +466,7 @@ class SkillDetailOverlay {
       }
     } else {
       // ── full-width (no sidebar) ──
-      const { descLines, bodyLines, mdMeta } = this.renderDetail(innerW);
+      const { descLines, bodyLines, mdMeta } = this.renderDetail(innerW, subtitleLines.length);
 
       for (const dl of descLines) lines.push(borderLine(dl, innerW, T));
       lines.push(borderLine(" " + T.bold("Prompt:"), innerW, T));
@@ -632,7 +643,7 @@ export default function (pi: ExtensionAPI) {
           }, {
             overlay: true,
             overlayOptions: {
-              width: "70%",
+              width: "80%",
               minWidth: 45,
               maxHeight: "80%",
               anchor: "center",
