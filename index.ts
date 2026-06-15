@@ -168,7 +168,7 @@ class SkillDetailOverlay {
   private rows: RowData[];
   private currentIdx: number;
   private scrollOffset = 0;
-  private maxBodyLines: number;
+  private getTerminalRows: () => number;
   private theme: SkillGateTheme;
   private md: Markdown;
   private showSidebar = true;
@@ -177,10 +177,10 @@ class SkillDetailOverlay {
   onToggle?: (name: string, state: ToggleState) => void;
   onInvoke?: (name: string) => void;
 
-  constructor(rows: RowData[], initialIdx: number, maxBodyLines: number, theme: SkillGateTheme) {
+  constructor(rows: RowData[], initialIdx: number, getTerminalRows: () => number, theme: SkillGateTheme) {
     this.rows = rows;
     this.currentIdx = Math.max(0, Math.min(initialIdx, rows.length - 1));
-    this.maxBodyLines = Math.max(8, maxBodyLines);
+    this.getTerminalRows = getTerminalRows;
     this.theme = theme;
     this.md = new Markdown("", 2, 0, getMarkdownTheme());
   }
@@ -224,11 +224,11 @@ class SkillDetailOverlay {
       return;
     }
     if (matchesKey(data, Key.pageUp)) {
-      this.scrollOffset = Math.max(0, this.scrollOffset - Math.ceil(this.maxBodyLines * SCROLL_FRACTION));
+      this.scrollOffset = Math.max(0, this.scrollOffset - Math.ceil(this.bodyHeightEstimate() * SCROLL_FRACTION));
       return;
     }
     if (matchesKey(data, Key.pageDown)) {
-      this.scrollOffset += Math.ceil(this.maxBodyLines * SCROLL_FRACTION);
+      this.scrollOffset += Math.ceil(this.bodyHeightEstimate() * SCROLL_FRACTION);
       return;
     }
     if (matchesKey(data, Key.home)) {
@@ -245,6 +245,11 @@ class SkillDetailOverlay {
   private sidebarWidth(): number {
     const maxLen = Math.max(...this.rows.map((r) => r.name.length), 0);
     return Math.max(14, Math.min(24, maxLen + 4));
+  }
+
+  /** Rough estimate of available body lines for scroll calculations. */
+  private bodyHeightEstimate(): number {
+    return Math.max(8, Math.floor(this.getTerminalRows() * 0.5));
   }
 
   // ── render sidebar column (height lines, sidebarW wide) ──
@@ -302,7 +307,8 @@ class SkillDetailOverlay {
   }
 
   // ── render detail column (unbordered — borders added by merge or full-width path) ──
-  private renderDetail(detailW: number, subtitleLines: number): {
+  // footerLines: how many footer lines we expect (used for body-budget subtraction).
+  private renderDetail(detailW: number, contentBudget: number, footerLines = 1): {
     descLines: string[];
     bodyLines: string[];
     mdMeta: { bodyLength: number; remaining: number; maxOffset: number; needsScrollbar: boolean; thumbH: number; thumbStart: number; gutterW: number; contentW: number };
@@ -335,16 +341,16 @@ class SkillDetailOverlay {
     }
 
     // ── budget: ensure total overlay height stays within bounds ──
-    // Total lines = 5 (borders/title/sep/footer) + subtitleLines + descLines + maxBodyLines
-    const OVERLAY_BUDGET = 42; // fits 80% of a typical 50-line terminal with margins
-    const MIN_BODY = 6;        // minimum visible body lines
-    const maxDesc = OVERLAY_BUDGET - 5 - subtitleLines - (MIN_BODY + 3);
+    // Desc + prompt header(2) + body + borderline(1) + footer(N) = descLines + bodyLines + 3 + N
+    // All of this must fit within contentBudget lines.
+    const MIN_BODY = 6; // minimum visible body lines
+    const BODY_CHROME = 3 + footerLines; // prompt header(2) + borderline(1) + footer(N)
+    const maxDesc = contentBudget - MIN_BODY - BODY_CHROME;
     if (descLines.length > maxDesc) {
       descLines.length = maxDesc;
       descLines[maxDesc - 1] = "  " + T.dim("…");
     }
-    const maxBody = OVERLAY_BUDGET - 5 - subtitleLines - descLines.length;
-    const remaining = Math.max(MIN_BODY, Math.min(this.maxBodyLines - 3, maxBody - 3));
+    const remaining = Math.max(MIN_BODY, contentBudget - descLines.length - BODY_CHROME);
     const body = readSkillBody(row.filePath);
 
     // Loop: render, measure gutter + scroll, adjust contentW, repeat until stable.
@@ -353,7 +359,10 @@ class SkillDetailOverlay {
     let gutterW = 4;
     let scrollW = 1;
     let needsScrollbar = true;
-    let contentW = detailW - gutterW - scrollW;
+    // contentW must be positive — Markdown.render() uses String.repeat(width)
+    // internally and will crash with a negative or zero value.
+    const MIN_CONTENT_W = 10;
+    let contentW = Math.max(MIN_CONTENT_W, detailW - gutterW - scrollW);
     this.md.setText(body);
     let mdLines = this.md.render(contentW);
     for (let pass = 0; pass < 3; pass++) {
@@ -363,7 +372,7 @@ class SkillDetailOverlay {
       needsScrollbar = mdLines.length > remaining;
       scrollW = needsScrollbar ? 1 : 0;
       if (gutterW === prevGutterW && scrollW === prevScrollW) break;
-      contentW = detailW - gutterW - scrollW;
+      contentW = Math.max(MIN_CONTENT_W, detailW - gutterW - scrollW);
       this.md.setText(body);
       mdLines = this.md.render(contentW);
     }
@@ -434,17 +443,34 @@ class SkillDetailOverlay {
     }
     lines.push(T.dim("│" + T.dim("─".repeat(innerW)) + "│"));
 
-    // ── layout: sidebar (toggleable) + detail ──
-    if (this.showSidebar) {
-      const sidebarW = this.sidebarWidth();
-      const sepW = 1;
-      const detailW = innerW - sidebarW - sepW;
+    // ── dynamic height: match maxHeight "80%" overlay option ──
+    const termRows = this.getTerminalRows();
+    const overlayMax = Math.max(12, Math.floor(termRows * 0.8));
+    const chrome = 3 + subtitleLines.length; // top border, title, subtitles, separator
+    const bottom = 1;                         // bottom border
+    const contentBudget = Math.max(10, overlayMax - chrome - bottom);
 
-      const { descLines, bodyLines, mdMeta } = this.renderDetail(detailW, subtitleLines.length);
+    // ── layout: sidebar (toggleable) + detail ──
+    // Fall back to full-width when the detail column would be too narrow.
+    const sidebarW = this.sidebarWidth();
+    const detailW = innerW - sidebarW - 1;
+    const useSidebar = this.showSidebar && detailW >= 20;
+
+    if (useSidebar) {
+
+      // Two-pass rendering: compute footer lines first, then re-allocate body budget.
+      // This keeps the overlay height stable when the footer wraps to multiple lines.
+      let { descLines, bodyLines, mdMeta } = this.renderDetail(detailW, contentBudget, 1);
+      let wrappedFooter = this.footerLines(mdMeta, detailW);
+      if (wrappedFooter.length > 1) {
+        const adjustedBudget = contentBudget - (wrappedFooter.length - 1);
+        ({ descLines, bodyLines, mdMeta } = this.renderDetail(detailW, adjustedBudget, wrappedFooter.length));
+        wrappedFooter = this.footerLines(mdMeta, detailW);
+      }
 
       // Body area height = description + prompt header + body + borderline + footer
       const promptHeader = [" " + T.bold("Prompt:"), ""];
-      const bodyHeight = descLines.length + promptHeader.length + bodyLines.length + 2; // +2 for borderline + footer
+      const bodyHeight = descLines.length + promptHeader.length + bodyLines.length + 1 + wrappedFooter.length; // +1 for borderline + N for footer
 
       const sidebarLines = this.renderSidebar(bodyHeight, sidebarW);
 
@@ -454,7 +480,7 @@ class SkillDetailOverlay {
         ...promptHeader.map((l) => padTo(l, detailW)),
         ...bodyLines.map((l) => padTo(l, detailW)),
         padTo(T.dim("─".repeat(detailW)), detailW),
-        padTo(this.footerLine(detailW, mdMeta), detailW),
+        ...wrappedFooter.map((l) => padTo(l, detailW)),
       ];
 
       // Ensure sidebar matches detail height
@@ -466,21 +492,86 @@ class SkillDetailOverlay {
       }
     } else {
       // ── full-width (no sidebar) ──
-      const { descLines, bodyLines, mdMeta } = this.renderDetail(innerW, subtitleLines.length);
+      let { descLines, bodyLines, mdMeta } = this.renderDetail(innerW, contentBudget, 1);
+      let wrappedFooter = this.footerLines(mdMeta, innerW - 2);
+      if (wrappedFooter.length > 1) {
+        const adjustedBudget = contentBudget - (wrappedFooter.length - 1);
+        ({ descLines, bodyLines, mdMeta } = this.renderDetail(innerW, adjustedBudget, wrappedFooter.length));
+        wrappedFooter = this.footerLines(mdMeta, innerW - 2);
+      }
 
       for (const dl of descLines) lines.push(borderLine(dl, innerW, T));
       lines.push(borderLine(" " + T.bold("Prompt:"), innerW, T));
       lines.push(borderLine("", innerW, T));
       for (const bl of bodyLines) lines.push(T.dim("│") + bl + T.dim("│"));
       lines.push(T.dim("│" + T.dim("─".repeat(innerW)) + "│"));
-      const ft = T.dim(this.footerText(mdMeta, innerW - 4));
-      lines.push(borderLine(ft, innerW, T));
+      for (const fl of wrappedFooter) lines.push(borderLine(fl, innerW, T));
     }
 
     // ── bottom border ──
     lines.push(T.dim("└" + "─".repeat(innerW) + "┘"));
 
     return lines;
+  }
+
+  /** Wrap the footer text to fit maxW and return styled lines. */
+  private footerLines(meta: { bodyLength: number; remaining: number; maxOffset: number }, maxW: number): string[] {
+    // Build the raw left-side text (scroll info + keybindings).
+    const hasMore = meta.bodyLength > meta.remaining;
+    let left: string;
+    if (hasMore) {
+      const pct = meta.maxOffset > 0 ? Math.round((this.scrollOffset / meta.maxOffset) * 100) : 0;
+      const up = this.scrollOffset > 0 ? "↑" : " ";
+      const endLine = Math.min(this.scrollOffset + meta.remaining, meta.bodyLength);
+      const dn = endLine < meta.bodyLength ? "↓" : " ";
+      left = ` ${up} ${pct}% ${dn}  PgUp/PgDn · Home/End · b sidebar · enter invoke · Esc close`;
+    } else {
+      left = " ↑↓ skill · b sidebar · enter invoke · Esc close";
+    }
+    const idx = this.theme.accent(`[${this.currentIdx + 1}/${this.rows.length}]`);
+
+    // Wrap the left text, leaving room for the index on the last line.
+    const idxVw = visibleWidth(idx);
+    const lastLineW = maxW - idxVw - 1;
+
+    let wrapped: string[];
+    if (lastLineW > 10) {
+      // Wrap everything at full width so the first lines use the full space.
+      wrapped = wrapText(left, maxW);
+      if (wrapped.length === 1) {
+        // Check whether the index fits on this single line.
+        const lVw = visibleWidth(wrapped[0]);
+        if (lVw + 1 + idxVw <= maxW) {
+          // Fits — right-align the index inline.
+          const gap = maxW - lVw - idxVw;
+          wrapped[0] = wrapped[0] + " ".repeat(gap) + idx;
+        } else {
+          // Doesn't fit — push the index to its own line, right-aligned.
+          wrapped.push(" ".repeat(Math.max(0, maxW - idxVw)) + idx);
+        }
+      } else {
+        // Multi-line: put the index on the last line, right-aligned.
+        // Re-wrap the last line to make room for the index.
+        const last = wrapped[wrapped.length - 1];
+        const lastRewrapped = wrapText(last, lastLineW);
+        wrapped[wrapped.length - 1] = lastRewrapped[0];
+        // Append remaining rewrapped lines (edge case) + index on final line.
+        for (let i = 1; i < lastRewrapped.length; i++) wrapped.push(lastRewrapped[i]);
+        const finalVw = visibleWidth(wrapped[wrapped.length - 1]);
+        if (finalVw + 1 + idxVw <= maxW) {
+          const finalGap = maxW - finalVw - idxVw;
+          wrapped[wrapped.length - 1] += " ".repeat(finalGap) + idx;
+        } else {
+          wrapped.push(" ".repeat(Math.max(0, maxW - idxVw)) + idx);
+        }
+      }
+    } else {
+      // Extremely narrow – wrap everything at full width, index on its own line.
+      wrapped = wrapText(left, maxW);
+      wrapped.push(" ".repeat(Math.max(0, maxW - idxVw)) + idx);
+    }
+
+    return wrapped.map((l) => this.theme.dim(l));
   }
 
   private footerLine(detailW: number, meta: { bodyLength: number; remaining: number; maxOffset: number }): string {
@@ -622,9 +713,8 @@ export default function (pi: ExtensionAPI) {
         const outcome = await new Promise<{ type: "close" } | { type: "invoke"; name: string }>((resolve) => {
           ctx.ui.custom((tui, piTheme, _kb, done) => {
             const T = makeTheme(piTheme);
-            const maxBody = 32;
             const initIdx = lastSkill ? rows.findIndex((r) => r.name === lastSkill) : 0;
-            const overlay = new SkillDetailOverlay(rows, Math.max(0, initIdx), maxBody, T);
+            const overlay = new SkillDetailOverlay(rows, Math.max(0, initIdx), () => tui.terminal.rows, T);
             overlay.onClose = () => { done(null); resolve({ type: "close" }); };
             overlay.onInvoke = (name) => { done(null); resolve({ type: "invoke", name }); };
             overlay.onToggle = (name, state) => {
