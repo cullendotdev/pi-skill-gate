@@ -53,11 +53,12 @@ Opens an overlay showing all discovered skills.
 |---|---|
 | `↑` `↓` | Navigate skills |
 | `Space` | Toggle selected skill enabled/disabled |
+| `/` | Enter search mode — type to jump to matching skills |
 | `b` | Toggle skill-list sidebar |
 | `PgUp` `PgDn` | Scroll prompt content |
 | `Home` `End` | Jump to top/bottom |
-| `Enter` | Invoke skill into chat |
-| `Esc` | Close |
+| `Enter` | Invoke skill into chat (confirm selection in search mode) |
+| `Esc` | Close (cancel search when searching) |
 
 ## Configuration
 

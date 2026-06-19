@@ -10,6 +10,7 @@
 import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent";
 import { DefaultResourceLoader, getAgentDir, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import {
+  decodeKittyPrintable,
   Key,
   matchesKey,
   Markdown,
@@ -172,6 +173,8 @@ class SkillDetailOverlay {
   private theme: SkillGateTheme;
   private md: Markdown;
   private showSidebar = true;
+  private searchMode = false;
+  private searchQuery = "";
 
   onClose?: () => void;
   onToggle?: (name: string, state: ToggleState) => void;
@@ -187,6 +190,66 @@ class SkillDetailOverlay {
 
   handleInput(data: string): void {
     if (this.rows.length === 0) return;
+
+    // ── search mode ──
+    if (this.searchMode) {
+      if (matchesKey(data, Key.escape)) {
+        this.searchMode = false;
+        this.searchQuery = "";
+        return;
+      }
+      if (matchesKey(data, Key.enter)) {
+        this.searchMode = false;
+        return;
+      }
+      if (matchesKey(data, Key.backspace)) {
+        this.searchQuery = this.searchQuery.slice(0, -1);
+        this.jumpToBestMatch();
+        return;
+      }
+      if (matchesKey(data, Key.up)) {
+        this.currentIdx = (this.currentIdx - 1 + this.rows.length) % this.rows.length;
+        this.scrollOffset = 0;
+        return;
+      }
+      if (matchesKey(data, Key.down)) {
+        this.currentIdx = (this.currentIdx + 1) % this.rows.length;
+        this.scrollOffset = 0;
+        return;
+      }
+      if (matchesKey(data, Key.pageUp)) {
+        this.scrollOffset = Math.max(0, this.scrollOffset - Math.ceil(this.bodyHeightEstimate() * SCROLL_FRACTION));
+        return;
+      }
+      if (matchesKey(data, Key.pageDown)) {
+        this.scrollOffset += Math.ceil(this.bodyHeightEstimate() * SCROLL_FRACTION);
+        return;
+      }
+      if (matchesKey(data, Key.home)) {
+        this.scrollOffset = 0;
+        return;
+      }
+      if (matchesKey(data, Key.end)) {
+        this.scrollOffset = Number.MAX_SAFE_INTEGER;
+        return;
+      }
+      // Printable characters — append to query
+      const ch = decodeKittyPrintable(data);
+      const printable = ch ?? data;
+      if (printable.length === 1 && printable >= " ") {
+        this.searchQuery += printable;
+        this.jumpToBestMatch();
+        return;
+      }
+      return; // ignore other keys while searching
+    }
+
+    // ── enter search mode on "/" ──
+    if (data === "/" || matchesKey(data, Key.slash)) {
+      this.searchMode = true;
+      this.searchQuery = "";
+      return;
+    }
 
     if (matchesKey(data, Key.up)) {
       this.currentIdx = (this.currentIdx - 1 + this.rows.length) % this.rows.length;
@@ -238,6 +301,21 @@ class SkillDetailOverlay {
     if (matchesKey(data, Key.end)) {
       this.scrollOffset = Number.MAX_SAFE_INTEGER;
       return;
+    }
+  }
+
+  /** Jump to the skill whose name best matches the search query. */
+  private jumpToBestMatch(): void {
+    const q = this.searchQuery.toLowerCase();
+    if (!q) {
+      this.currentIdx = 0;
+      this.scrollOffset = 0;
+      return;
+    }
+    const idx = this.rows.findIndex((r) => r.name.toLowerCase().includes(q));
+    if (idx >= 0) {
+      this.currentIdx = idx;
+      this.scrollOffset = 0;
     }
   }
 
@@ -436,17 +514,28 @@ class SkillDetailOverlay {
     const tc = this.rows.length;
     lines.push(borderLine(" " + T.accent(T.bold(" Skill Gate")) + T.dim(` ── ${vc}/${tc} skills enabled`), innerW, T));
     const subtitleW = innerW - 2; // account for leading spaces + border
-    const subtitle = "Control which skills the model can see. Enabled skills are injected into the system prompt; disabled skills are hidden.";
-    const subtitleLines = wrapText(subtitle, subtitleW);
-    for (const sl of subtitleLines) {
-      lines.push(borderLine(T.muted("  " + sl), innerW, T));
+    let headerLines: number;
+    if (this.searchMode) {
+      // ── search bar (replaces subtitle when active) ──
+      const cursor = this.theme.accent("█");
+      const searchLabel = this.theme.dim(" /") + " " + this.searchQuery + cursor;
+      lines.push(borderLine(searchLabel, innerW, T));
+      headerLines = 1; // search bar
+    } else {
+      const subtitle = "Control which skills the model can see. Enabled skills are injected into the system prompt; disabled skills are hidden.";
+      const subtitleLines = wrapText(subtitle, subtitleW);
+      for (const sl of subtitleLines) {
+        lines.push(borderLine(T.muted("  " + sl), innerW, T));
+      }
+      headerLines = subtitleLines.length;
     }
+
     lines.push(T.dim("│" + T.dim("─".repeat(innerW)) + "│"));
 
     // ── dynamic height: match maxHeight "80%" overlay option ──
     const termRows = this.getTerminalRows();
     const overlayMax = Math.max(12, Math.floor(termRows * 0.8));
-    const chrome = 3 + subtitleLines.length; // top border, title, subtitles, separator
+    const chrome = 3 + headerLines; // top border, title, header lines, separator
     const bottom = 1;                         // bottom border
     const contentBudget = Math.max(10, overlayMax - chrome - bottom);
 
@@ -519,14 +608,16 @@ class SkillDetailOverlay {
     // Build the raw left-side text (scroll info + keybindings).
     const hasMore = meta.bodyLength > meta.remaining;
     let left: string;
-    if (hasMore) {
+    if (this.searchMode) {
+      left = " / search · Esc cancel · Enter confirm";
+    } else if (hasMore) {
       const pct = meta.maxOffset > 0 ? Math.round((this.scrollOffset / meta.maxOffset) * 100) : 0;
       const up = this.scrollOffset > 0 ? "↑" : " ";
       const endLine = Math.min(this.scrollOffset + meta.remaining, meta.bodyLength);
       const dn = endLine < meta.bodyLength ? "↓" : " ";
-      left = ` ${up} ${pct}% ${dn}  PgUp/PgDn · Home/End · b sidebar · enter invoke · Esc close`;
+      left = ` ${up} ${pct}% ${dn}  PgUp/PgDn · Home/End · / search · b sidebar · enter invoke · Esc close`;
     } else {
-      left = " ↑↓ skill · b sidebar · enter invoke · Esc close";
+      left = " ↑↓ skill · / search · b sidebar · enter invoke · Esc close";
     }
     const idx = this.theme.accent(`[${this.currentIdx + 1}/${this.rows.length}]`);
 
