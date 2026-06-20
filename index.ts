@@ -162,7 +162,7 @@ function wrapText(text: string, maxWidth: number): string[] {
 // Skill Detail Overlay
 // ---------------------------------------------------------------------------
 
-/** Fraction of page height to jump on PgUp/PgDn (keep 25% overlap for context). */
+/** Fraction of page height to jump on k/j (keep 25% overlap for context). */
 const SCROLL_FRACTION = 0.75;
 
 /** Highlight the first occurrence of query in text using ANSI styles. */
@@ -232,14 +232,6 @@ class SkillDetailOverlay {
         this.scrollOffset = 0;
         return;
       }
-      if (matchesKey(data, Key.pageUp)) {
-        this.scrollOffset = Math.max(0, this.scrollOffset - Math.ceil(this.bodyHeightEstimate() * SCROLL_FRACTION));
-        return;
-      }
-      if (matchesKey(data, Key.pageDown)) {
-        this.scrollOffset += Math.ceil(this.bodyHeightEstimate() * SCROLL_FRACTION);
-        return;
-      }
       if (matchesKey(data, Key.home)) {
         this.scrollOffset = 0;
         return;
@@ -301,11 +293,11 @@ class SkillDetailOverlay {
       if (row) this.onInvoke?.(row.name);
       return;
     }
-    if (matchesKey(data, Key.pageUp)) {
+    if (data == "k") {
       this.scrollOffset = Math.max(0, this.scrollOffset - Math.ceil(this.bodyHeightEstimate() * SCROLL_FRACTION));
       return;
     }
-    if (matchesKey(data, Key.pageDown)) {
+    if (data == "j") {
       this.scrollOffset += Math.ceil(this.bodyHeightEstimate() * SCROLL_FRACTION);
       return;
     }
@@ -669,7 +661,7 @@ class SkillDetailOverlay {
       const up = this.scrollOffset > 0 ? "↑" : " ";
       const endLine = Math.min(this.scrollOffset + meta.remaining, meta.bodyLength);
       const dn = endLine < meta.bodyLength ? "↓" : " ";
-      left = ` ${up} ${pct}% ${dn}  PgUp/PgDn · Home/End · / search · b sidebar · enter invoke · Esc close`;
+      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · / search · b sidebar · enter invoke · Esc close`;
     } else {
       left = " ↑↓ skill · / search · b sidebar · enter invoke · Esc close";
     }
@@ -740,7 +732,7 @@ class SkillDetailOverlay {
       const up = this.scrollOffset > 0 ? "↑" : " ";
       const endLine = Math.min(this.scrollOffset + meta.remaining, meta.bodyLength);
       const dn = endLine < meta.bodyLength ? "↓" : " ";
-      left = ` ${up} ${pct}% ${dn}  PgUp/PgDn · Home/End · b sidebar · enter invoke · Esc close`;
+      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · b sidebar · enter invoke · Esc close`;
     } else {
       left = " ↑↓ skill · b sidebar · enter invoke · Esc close";
     }

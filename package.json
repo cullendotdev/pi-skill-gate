@@ -1,6 +1,6 @@
 {
   "name": "pi-skill-gate",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Interactive skill visibility manager for pi coding agent — browse, toggle, and invoke skills from a keyboard-driven TUI overlay.",
   "keywords": [
     "pi-package",
