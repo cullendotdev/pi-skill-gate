@@ -165,6 +165,15 @@ function wrapText(text: string, maxWidth: number): string[] {
 /** Fraction of page height to jump on PgUp/PgDn (keep 25% overlap for context). */
 const SCROLL_FRACTION = 0.75;
 
+/** Highlight the first occurrence of query in text using ANSI styles. */
+function highlightMatch(text: string, query: string, baseStyle: (t: string) => string, matchStyle: (t: string) => string): string {
+  if (!query) return baseStyle(text);
+  const lower = text.toLowerCase();
+  const qi = lower.indexOf(query.toLowerCase());
+  if (qi < 0) return baseStyle(text);
+  return baseStyle(text.slice(0, qi)) + matchStyle(text.slice(qi, qi + query.length)) + baseStyle(text.slice(qi + query.length));
+}
+
 class SkillDetailOverlay {
   private rows: RowData[];
   private currentIdx: number;
@@ -204,16 +213,22 @@ class SkillDetailOverlay {
       }
       if (matchesKey(data, Key.backspace)) {
         this.searchQuery = this.searchQuery.slice(0, -1);
-        this.jumpToBestMatch();
+        this.onSearchQueryChanged();
         return;
       }
       if (matchesKey(data, Key.up)) {
-        this.currentIdx = (this.currentIdx - 1 + this.rows.length) % this.rows.length;
+        const f = this.getFilteredIndices();
+        const pos = f.indexOf(this.currentIdx);
+        if (pos > 0) this.currentIdx = f[pos - 1];
+        else if (f.length > 0) this.currentIdx = f[f.length - 1];
         this.scrollOffset = 0;
         return;
       }
       if (matchesKey(data, Key.down)) {
-        this.currentIdx = (this.currentIdx + 1) % this.rows.length;
+        const f = this.getFilteredIndices();
+        const pos = f.indexOf(this.currentIdx);
+        if (pos >= 0 && pos < f.length - 1) this.currentIdx = f[pos + 1];
+        else if (f.length > 0) this.currentIdx = f[0];
         this.scrollOffset = 0;
         return;
       }
@@ -238,7 +253,7 @@ class SkillDetailOverlay {
       const printable = ch ?? data;
       if (printable.length === 1 && printable >= " ") {
         this.searchQuery += printable;
-        this.jumpToBestMatch();
+        this.onSearchQueryChanged();
         return;
       }
       return; // ignore other keys while searching
@@ -304,19 +319,33 @@ class SkillDetailOverlay {
     }
   }
 
-  /** Jump to the skill whose name best matches the search query. */
-  private jumpToBestMatch(): void {
+  /** Compute filtered skill indices ordered by match quality (prefix first, then substring). */
+  private getFilteredIndices(): number[] {
     const q = this.searchQuery.toLowerCase();
-    if (!q) {
-      this.currentIdx = 0;
-      this.scrollOffset = 0;
-      return;
+    if (!q || !this.searchMode) return this.rows.map((_, i) => i);
+    const prefix: number[] = [];
+    const substr: number[] = [];
+    for (let i = 0; i < this.rows.length; i++) {
+      const name = this.rows[i].name.toLowerCase();
+      if (name.startsWith(q)) {
+        prefix.push(i);
+      } else if (name.includes(q)) {
+        substr.push(i);
+      }
     }
-    const idx = this.rows.findIndex((r) => r.name.toLowerCase().includes(q));
-    if (idx >= 0) {
-      this.currentIdx = idx;
-      this.scrollOffset = 0;
+    prefix.sort((a, b) => this.rows[a].name.localeCompare(this.rows[b].name));
+    substr.sort((a, b) => this.rows[a].name.localeCompare(this.rows[b].name));
+    return [...prefix, ...substr];
+  }
+
+  /** Called when the search query changes: jump to the best match. */
+  private onSearchQueryChanged(): void {
+    const filtered = this.getFilteredIndices();
+    if (filtered.length === 0) { this.scrollOffset = 0; return; }
+    if (!filtered.includes(this.currentIdx)) {
+      this.currentIdx = filtered[0];
     }
+    this.scrollOffset = 0;
   }
 
   // ── sidebar width (based on longest skill name + ▶ indicator) ──
@@ -331,16 +360,21 @@ class SkillDetailOverlay {
   }
 
   // ── render sidebar column (height lines, sidebarW wide) ──
+  // When in search mode, only matching skills are shown with highlighted search terms.
   private renderSidebar(height: number, sidebarW: number): string[] {
     const T = this.theme;
     const lines: string[] = [];
     const skillArea = Math.max(0, height - 2); // header + separator
 
+    const filtered = this.searchMode ? this.getFilteredIndices() : this.rows.map((_, i) => i);
+    const total = filtered.length;
+
     // Auto-scroll to keep selected skill visible
     let sbScroll = 0;
-    if (this.rows.length > skillArea) {
-      sbScroll = Math.max(0, this.currentIdx - Math.floor(skillArea / 2));
-      sbScroll = Math.min(sbScroll, this.rows.length - skillArea);
+    if (total > skillArea) {
+      const selPos = filtered.indexOf(this.currentIdx);
+      sbScroll = Math.max(0, selPos - Math.floor(skillArea / 2));
+      sbScroll = Math.min(sbScroll, total - skillArea);
     }
 
     const leftLabel = T.dim(" Skills");
@@ -352,32 +386,52 @@ class SkillDetailOverlay {
     lines.push(sbHeader);
     lines.push(T.dim("─".repeat(sidebarW)));
 
-    for (let i = 0; i < skillArea; i++) {
-      const ri = i + sbScroll;
-      const r = this.rows[ri];
-      if (r) {
-        const isCurrent = ri === this.currentIdx;
-        const arrow = isCurrent ? " " + T.accent("▶") : "  ";
-        const name = truncateToWidth(r.name, sidebarW - 4);
-        const label = arrow + " " + name;
-        let styled: string;
-        if (isCurrent && !r.disableModelInvocation && r.state === "enabled") {
-          // Green name with accent arrow for visibility
-          styled = " " + T.accent("▶") + " " + T.enabled(name);
-        } else if (isCurrent) {
-          styled = T.accent(label);
-        } else if (r.disableModelInvocation) {
-          styled = T.nativeDisabled(label);
-        } else if (r.state === "enabled") {
-          styled = T.enabled(label);
+    if (total === 0 && this.searchMode) {
+      // No matches
+      const msg = T.dim(" (no matches)");
+      lines.push(msg + " ".repeat(Math.max(0, sidebarW - visibleWidth(msg))));
+    } else {
+      for (let i = 0; i < skillArea; i++) {
+        const li = i + sbScroll;
+        const ri = filtered[li];
+        if (ri !== undefined) {
+          const r = this.rows[ri];
+          const isCurrent = ri === this.currentIdx;
+          const arrow = isCurrent ? " " + T.accent("▶") : "  ";
+
+          // Determine base styling for this row
+          let baseStyle: (t: string) => string;
+          if (r.disableModelInvocation) {
+            baseStyle = (t) => T.nativeDisabled(t);
+          } else if (r.state === "enabled") {
+            baseStyle = (t) => T.enabled(t);
+          } else {
+            baseStyle = (t) => T.dim(t);
+          }
+
+          // Highlight search match within the name
+          let styledName: string;
+          if (this.searchMode && this.searchQuery) {
+            styledName = highlightMatch(r.name, this.searchQuery, baseStyle, (t) => T.accent(T.bold(t)));
+          } else {
+            styledName = baseStyle(r.name);
+          }
+          styledName = truncateToWidth(styledName, sidebarW - 4);
+
+          // Build final row
+          let styled: string;
+          if (isCurrent) {
+            styled = T.accent(arrow + " " + styledName);
+          } else {
+            styled = arrow + styledName;
+          }
+
+          // Pad by visible width (ANSI escape codes inflate .length, breaking .padEnd)
+          const vw = visibleWidth(styled);
+          lines.push(vw < sidebarW ? styled + " ".repeat(sidebarW - vw) : styled);
         } else {
-          styled = T.dim(label);
+          lines.push(" ".repeat(sidebarW));
         }
-        // Pad by visible width (ANSI escape codes inflate .length, breaking .padEnd)
-        const vw = visibleWidth(styled);
-        lines.push(vw < sidebarW ? styled + " ".repeat(sidebarW - vw) : styled);
-      } else {
-        lines.push(" ".repeat(sidebarW));
       }
     }
 
@@ -619,7 +673,13 @@ class SkillDetailOverlay {
     } else {
       left = " ↑↓ skill · / search · b sidebar · enter invoke · Esc close";
     }
-    const idx = this.theme.accent(`[${this.currentIdx + 1}/${this.rows.length}]`);
+    const idx = this.searchMode
+      ? (() => {
+          const fi = this.getFilteredIndices();
+          const pos = fi.indexOf(this.currentIdx);
+          return this.theme.accent(`[${pos >= 0 ? pos + 1 : 0}/${fi.length}]`);
+        })()
+      : this.theme.accent(`[${this.currentIdx + 1}/${this.rows.length}]`);
 
     // Wrap the left text, leaving room for the index on the last line.
     const idxVw = visibleWidth(idx);
