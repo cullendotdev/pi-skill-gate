@@ -5,6 +5,7 @@
  * Uses pi's ResourceLoader API for skill discovery.
  *
  * Persistence: ~/.pi/agent/config/skill-gate.json
+ * Supports per-project overrides via the "projects" key, keyed by absolute path.
  */
 
 import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent";
@@ -25,8 +26,13 @@ import { homedir } from "node:os";
 // Types
 // ---------------------------------------------------------------------------
 
-interface SkillGateConfig { skills: Record<string, ToggleState>; }
+interface ProjectSkillConfig { skills: Record<string, ToggleState>; }
+interface SkillGateConfig {
+  skills: Record<string, ToggleState>;
+  projects: Record<string, ProjectSkillConfig>;
+}
 type ToggleState = "enabled" | "disabled";
+type EditScope = "global" | "project";
 
 // ---------------------------------------------------------------------------
 // Config persistence
@@ -35,11 +41,14 @@ type ToggleState = "enabled" | "disabled";
 const CONFIG_PATH = path.join(homedir(), ".pi", "agent", "config", "skill-gate.json");
 
 function loadConfig(): SkillGateConfig {
-  if (!fs.existsSync(CONFIG_PATH)) return { skills: {} };
-  try { return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8")); }
+  if (!fs.existsSync(CONFIG_PATH)) return { skills: {}, projects: {} };
+  try {
+    const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
+    return { skills: raw.skills || {}, projects: raw.projects || {} };
+  }
   catch {
     console.warn(`[skill-gate] Failed to parse ${CONFIG_PATH} — using empty config`);
-    return { skills: {} };
+    return { skills: {}, projects: {} };
   }
 }
 function saveConfig(c: SkillGateConfig): void {
@@ -47,18 +56,39 @@ function saveConfig(c: SkillGateConfig): void {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2), "utf-8");
 }
 
-/** Load state for a skill from config. Defaults to "disabled". */
-function loadState(name: string, config: SkillGateConfig): ToggleState {
+/** Resolve effective state: project override → global → default "disabled". */
+function loadEffectiveState(name: string, config: SkillGateConfig, projectPath?: string): { state: ToggleState; source: "global" | "project" | "default" } {
+  if (projectPath) {
+    const proj = config.projects?.[projectPath]?.skills?.[name];
+    if (proj === "enabled" || proj === "disabled") return { state: proj, source: "project" };
+  }
   const raw = config.skills[name];
-  return (raw === "enabled" || raw === "disabled") ? raw : "disabled";
+  if (raw === "enabled" || raw === "disabled") return { state: raw, source: "global" };
+  return { state: "disabled", source: "default" };
 }
 
-/** Persist a toggle. Removes the key on "disabled" since that's the default. */
-function persistToggle(name: string, value: ToggleState, config: SkillGateConfig): void {
-  if (value === "disabled") {
-    delete config.skills[name];
-  } else {
-    config.skills[name] = value;
+/** Persist a toggle to the given scope. Cleans up redundant project overrides
+ *  (entries that match the global effective state are removed). */
+function persistToggle(name: string, value: ToggleState, config: SkillGateConfig, scope: EditScope, projectPath?: string): void {
+  if (scope === "global") {
+    if (value === "disabled") {
+      delete config.skills[name];
+    } else {
+      config.skills[name] = value;
+    }
+  } else if (scope === "project" && projectPath) {
+    if (!config.projects) config.projects = {};
+    if (!config.projects[projectPath]) config.projects[projectPath] = { skills: {} };
+    const proj = config.projects[projectPath];
+    // If the new value matches what global would give, remove the override (clean).
+    const globalEff = config.skills[name] === "enabled" ? "enabled" : "disabled";
+    if (value === globalEff) {
+      delete proj.skills[name];
+    } else {
+      proj.skills[name] = value;
+    }
+    // Prune empty project sections
+    if (Object.keys(proj.skills).length === 0) delete config.projects[projectPath];
   }
   saveConfig(config);
 }
@@ -142,6 +172,8 @@ interface RowData {
   filePath: string;
   disableModelInvocation: boolean;
   state: ToggleState;
+  source: "global" | "project" | "default";
+  globalEnabled: boolean;
 }
 
 function wrapText(text: string, maxWidth: number): string[] {
@@ -184,17 +216,28 @@ class SkillDetailOverlay {
   private showSidebar = true;
   private searchMode = false;
   private searchQuery = "";
+  private editingScope: EditScope;
+  private projectName?: string;
+  private hasProject: boolean;
 
   onClose?: () => void;
   onToggle?: (name: string, state: ToggleState) => void;
   onInvoke?: (name: string) => void;
+  onScopeToggle?: () => void;
 
-  constructor(rows: RowData[], initialIdx: number, getTerminalRows: () => number, theme: SkillGateTheme) {
+  constructor(rows: RowData[], initialIdx: number, getTerminalRows: () => number, theme: SkillGateTheme, editingScope: EditScope, projectName?: string, hasProject = false) {
     this.rows = rows;
     this.currentIdx = Math.max(0, Math.min(initialIdx, rows.length - 1));
     this.getTerminalRows = getTerminalRows;
     this.theme = theme;
     this.md = new Markdown("", 2, 0, getMarkdownTheme());
+    this.editingScope = editingScope;
+    this.projectName = projectName;
+    this.hasProject = hasProject;
+  }
+
+  setEditingScope(scope: EditScope): void {
+    this.editingScope = scope;
   }
 
   handleInput(data: string): void {
@@ -280,6 +323,10 @@ class SkillDetailOverlay {
       this.showSidebar = !this.showSidebar;
       return;
     }
+    if ((data === "g" || data === "G") && this.hasProject) {
+      this.onScopeToggle?.();
+      return;
+    }
     if (matchesKey(data, Key.space)) {
       const row = this.rows[this.currentIdx];
       if (row && !row.disableModelInvocation) {
@@ -343,7 +390,9 @@ class SkillDetailOverlay {
   // ── sidebar width (based on longest skill name + ▶ indicator) ──
   private sidebarWidth(): number {
     const maxLen = Math.max(...this.rows.map((r) => r.name.length), 0);
-    return Math.max(14, Math.min(24, maxLen + 4));
+    // Extra room for ·G / ·P indicators when project-context is active
+    const indicatorPad = this.hasProject ? 3 : 0;
+    return Math.max(14, Math.min(28, maxLen + 4 + indicatorPad));
   }
 
   /** Rough estimate of available body lines for scroll calculations. */
@@ -383,6 +432,9 @@ class SkillDetailOverlay {
       const msg = T.dim(" (no matches)");
       lines.push(msg + " ".repeat(Math.max(0, sidebarW - visibleWidth(msg))));
     } else {
+      // Account for potential ·G/·P indicator when computing name truncation
+      const indicatorBudget = this.hasProject ? visibleWidth(T.dim(" ·G")) : 0;
+
       for (let i = 0; i < skillArea; i++) {
         const li = i + sbScroll;
         const ri = filtered[li];
@@ -397,6 +449,9 @@ class SkillDetailOverlay {
             baseStyle = (t) => T.nativeDisabled(t);
           } else if (r.state === "enabled") {
             baseStyle = (t) => T.enabled(t);
+          } else if (r.source === "project" && r.globalEnabled) {
+            // Enabled globally but explicitly disabled by project override
+            baseStyle = (t) => T.error(t);
           } else {
             baseStyle = (t) => T.dim(t);
           }
@@ -408,7 +463,7 @@ class SkillDetailOverlay {
           } else {
             styledName = baseStyle(r.name);
           }
-          styledName = truncateToWidth(styledName, sidebarW - 4);
+          styledName = truncateToWidth(styledName, sidebarW - 4 - indicatorBudget);
 
           // Build final row
           let styled: string;
@@ -416,6 +471,15 @@ class SkillDetailOverlay {
             styled = T.accent(arrow + " " + styledName);
           } else {
             styled = arrow + styledName;
+          }
+
+          // Source inheritance indicator
+          if (!r.disableModelInvocation) {
+            if (this.editingScope === "project" && r.source === "global") {
+              styled += T.dim(" ·G");
+            } else if (this.editingScope === "global" && r.source === "project") {
+              styled += T.dim(" ·P");
+            }
           }
 
           // Pad by visible width (ANSI escape codes inflate .length, breaking .padEnd)
@@ -453,7 +517,15 @@ class SkillDetailOverlay {
       descLines.push(" " + T.bold("Status: ") + T.nativeDisabled("(natively disabled)"));
     } else {
       const st = row.state === "enabled" ? T.enabled("enabled") : T.error("disabled");
-      descLines.push(" " + T.bold("Status: ") + st + T.dim("  [space to toggle]"));
+      let sourceCtx = "";
+      let toggleHint = T.dim("  [space to toggle]");
+      if (this.editingScope === "project" && row.source === "global") {
+        sourceCtx = T.dim(" · inherited from global");
+        toggleHint = T.dim("  [space to override]");
+      } else if (this.editingScope === "global" && row.source === "project") {
+        sourceCtx = T.dim(" · overridden at project level");
+      }
+      descLines.push(" " + T.bold("Status: ") + st + sourceCtx + toggleHint);
     }
 
     if (row.description) {
@@ -558,7 +630,8 @@ class SkillDetailOverlay {
     // ── title bar (full width) ──
     const vc = this.rows.filter((r) => !r.disableModelInvocation && r.state === "enabled").length;
     const tc = this.rows.length;
-    lines.push(borderLine(" " + T.accent(T.bold(" Skill Gate")) + T.dim(` ── ${vc}/${tc} skills enabled`), innerW, T));
+    const projLabel = this.projectName ? T.dim(` · ${this.projectName}`) : "";
+    lines.push(borderLine(" " + T.accent(T.bold(" Skill Gate")) + projLabel + T.dim(` ── ${vc}/${tc} skills enabled`), innerW, T));
     const subtitleW = innerW - 2; // account for leading spaces + border
     let headerLines: number;
     if (this.searchMode) {
@@ -567,6 +640,12 @@ class SkillDetailOverlay {
       const searchLabel = this.theme.dim(" /") + " " + this.searchQuery + cursor;
       lines.push(borderLine(searchLabel, innerW, T));
       headerLines = 1; // search bar
+    } else if (this.hasProject) {
+      // ── scope indicator line (replaces generic subtitle) ──
+      const otherScope = this.editingScope === "global" ? "project" : "global";
+      const scopeLabel = T.dim(`  Editing: ${this.editingScope}`) + T.muted(`  [g] edit ${otherScope}`);
+      lines.push(borderLine(scopeLabel, innerW, T));
+      headerLines = 1;
     } else {
       const subtitle = "Control which skills the model can see. Enabled skills are injected into the system prompt; disabled skills are hidden.";
       const subtitleLines = wrapText(subtitle, subtitleW);
@@ -653,6 +732,7 @@ class SkillDetailOverlay {
   private footerLines(meta: { bodyLength: number; remaining: number; maxOffset: number }, maxW: number): string[] {
     // Build the raw left-side text (scroll info + keybindings).
     const hasMore = meta.bodyLength > meta.remaining;
+    const scopeKey = this.hasProject ? " · g scope" : "";
     let left: string;
     if (this.searchMode) {
       left = " / search · Esc cancel · Enter confirm";
@@ -661,9 +741,9 @@ class SkillDetailOverlay {
       const up = this.scrollOffset > 0 ? "↑" : " ";
       const endLine = Math.min(this.scrollOffset + meta.remaining, meta.bodyLength);
       const dn = endLine < meta.bodyLength ? "↓" : " ";
-      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · / search · b sidebar · enter invoke · Esc close`;
+      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · / search · b sidebar${scopeKey} · enter invoke · Esc close`;
     } else {
-      left = " ↑↓ skill · / search · b sidebar · enter invoke · Esc close";
+      left = ` ↑↓ skill · / search · b sidebar${scopeKey} · enter invoke · Esc close`;
     }
     const idx = this.searchMode
       ? (() => {
@@ -726,15 +806,16 @@ class SkillDetailOverlay {
 
   private footerText(meta: { bodyLength: number; remaining: number; maxOffset: number }, maxW: number): string {
     const hasMore = meta.bodyLength > meta.remaining;
+    const scopeKey = this.hasProject ? " · g scope" : "";
     let left: string;
     if (hasMore) {
       const pct = meta.maxOffset > 0 ? Math.round((this.scrollOffset / meta.maxOffset) * 100) : 0;
       const up = this.scrollOffset > 0 ? "↑" : " ";
       const endLine = Math.min(this.scrollOffset + meta.remaining, meta.bodyLength);
       const dn = endLine < meta.bodyLength ? "↓" : " ";
-      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · b sidebar · enter invoke · Esc close`;
+      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · b sidebar${scopeKey} · enter invoke · Esc close`;
     } else {
-      left = " ↑↓ skill · b sidebar · enter invoke · Esc close";
+      left = ` ↑↓ skill · b sidebar${scopeKey} · enter invoke · Esc close`;
     }
     const idx = this.theme.accent(`[${this.currentIdx + 1}/${this.rows.length}]`);
     const leftVw = visibleWidth(left);
@@ -804,14 +885,17 @@ export default function (pi: ExtensionAPI) {
   // ── System prompt hook ──
   pi.on("before_agent_start", async (event, ctx) => {
     const config = loadConfig();
-    const rows: RowData[] = cachedSkills.map((s) => {
-      const state = loadState(s.name, config);
+    const projectPath = ctx.cwd !== homedir() ? ctx.cwd : undefined;
+    const rows = cachedSkills.map((s) => {
+      const { state } = loadEffectiveState(s.name, config, projectPath);
       return {
         name: s.name,
         description: s.description,
         filePath: s.filePath,
         disableModelInvocation: s.disableModelInvocation,
         state,
+        source: "global" as const, // not consumed by buildVisibleBlock
+        globalEnabled: false,       // not consumed by buildVisibleBlock
       };
     });
     let prompt = event.systemPrompt.replace(/\n<available_skills>[\s\S]*?<\/available_skills>\n/g, "\n");
@@ -832,16 +916,26 @@ export default function (pi: ExtensionAPI) {
       const skills = cachedSkills;
       if (skills.length === 0) { ctx.ui.notify("No skills discovered", "warning"); return; }
 
-      const stateMap = new Map<string, ToggleState>();
-      for (const s of skills) stateMap.set(s.name, loadState(s.name, config));
+      const projectPath = ctx.cwd !== homedir() ? ctx.cwd : undefined;
+      const projectName = projectPath ? path.basename(projectPath) : undefined;
 
-      const sortRows = (): RowData[] => {
+      const stateMap = new Map<string, ToggleState>();
+      const sourceMap = new Map<string, "global" | "project" | "default">();
+      for (const s of skills) {
+        const { state, source } = loadEffectiveState(s.name, config, projectPath);
+        stateMap.set(s.name, state);
+        sourceMap.set(s.name, source);
+      }
+
+      const buildRows = (): RowData[] => {
         const data: RowData[] = skills.map((s) => ({
           name: s.name,
           description: s.description,
           filePath: s.filePath,
           disableModelInvocation: s.disableModelInvocation,
           state: stateMap.get(s.name)!,
+          source: sourceMap.get(s.name)!,
+          globalEnabled: config.skills[s.name] === "enabled",
         }));
         data.sort((a, b) => a.name.localeCompare(b.name));
         return data;
@@ -850,19 +944,33 @@ export default function (pi: ExtensionAPI) {
       let lastSkill: string | undefined;
 
       while (true) {
-        const rows = sortRows();
+        let editingScope: EditScope = "global";
+        let rows = buildRows();
 
         // Open the detail overlay directly
         const outcome = await new Promise<{ type: "close" } | { type: "invoke"; name: string }>((resolve) => {
+          let overlay: SkillDetailOverlay;
+
           ctx.ui.custom((tui, piTheme, _kb, done) => {
             const T = makeTheme(piTheme);
             const initIdx = lastSkill ? rows.findIndex((r) => r.name === lastSkill) : 0;
-            const overlay = new SkillDetailOverlay(rows, Math.max(0, initIdx), () => tui.terminal.rows, T);
+            overlay = new SkillDetailOverlay(rows, Math.max(0, initIdx), () => tui.terminal.rows, T, editingScope, projectName, !!projectPath);
             overlay.onClose = () => { done(null); resolve({ type: "close" }); };
             overlay.onInvoke = (name) => { done(null); resolve({ type: "invoke", name }); };
             overlay.onToggle = (name, state) => {
-              stateMap.set(name, state);
-              persistToggle(name, state, config);
+              persistToggle(name, state, config, editingScope, projectPath);
+              // Recompute effective state for the toggled skill
+              const { state: newState, source: newSource } = loadEffectiveState(name, config, projectPath);
+              stateMap.set(name, newState);
+              sourceMap.set(name, newSource);
+              // Update the row in-place for immediate re-render
+              const row = rows.find(r => r.name === name);
+              if (row) { row.state = newState; row.source = newSource; row.globalEnabled = config.skills[name] === "enabled"; }
+              tui.requestRender();
+            };
+            overlay.onScopeToggle = () => {
+              editingScope = editingScope === "global" ? "project" : "global";
+              overlay.setEditingScope(editingScope);
               tui.requestRender();
             };
             return {
@@ -901,4 +1009,3 @@ export default function (pi: ExtensionAPI) {
     },
   });
 }
-

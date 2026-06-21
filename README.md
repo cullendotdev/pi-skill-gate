@@ -20,6 +20,7 @@ Control which skills are injected into the initial system prompt with `/skill-ga
 - **Persistent state** — toggle state saved to `~/.pi/agent/config/skill-gate.json`
 - **System prompt injection** — enabled skills are automatically inserted as `<available_skills>` before each agent start via the `before_agent_start` hook
 - **Respects native-disabled** — skills with `disableModelInvocation: true` are marked with a disabled indicator and cannot be toggled
+- **Per-project configs** — project-level overrides stored under a `projects` key in the same config file, keyed by absolute path. Toggle scope between global and project with `g`
 - **Fast hook** — `before_agent_start` filters from an in-memory cache — zero filesystem access per message
 
 ## Installation
@@ -58,11 +59,14 @@ Opens an overlay showing all discovered skills.
 | `k` `j` | Scroll prompt content |
 | `Home` `End` | Jump to top/bottom |
 | `Enter` | Invoke skill into chat (confirm selection in search mode) |
+| `g` | Toggle editing scope (global ↔ project) — only in a project directory |
 | `Esc` | Close (cancel search when searching) |
 
 ## Configuration
 
 `skill-gate.json` at `~/.pi/agent/config/skill-gate.json` is created automatically. Only `"enabled"` keys are persisted; `"disabled"` is the default.
+
+### Global skills
 
 ```json
 {
@@ -72,6 +76,31 @@ Opens an overlay showing all discovered skills.
   }
 }
 ```
+
+### Per-project overrides
+
+Add a `projects` key keyed by the absolute project path. Project entries override global settings for that project only. The overlay defaults to editing the **global** scope — press `g` to switch to project-level editing.
+
+```json
+{
+  "skills": {
+    "code-review": "enabled",
+    "debugger": "enabled"
+  },
+  "projects": {
+    "/home/user/work/my-react-app": {
+      "skills": {
+        "debugger": "disabled",
+        "test-runner": "enabled"
+      }
+    }
+  }
+}
+```
+
+In this example, `my-react-app` inherits `code-review` from global, overrides `debugger` to disabled (shown in red in the sidebar), and adds `test-runner` (not in global).
+
+Redundant project entries (where the project toggle matches the global effective state) are automatically removed to keep the config clean.
 
 > [!WARNING]
 > Corrupted JSON resets all toggles to disabled.
@@ -86,15 +115,23 @@ session_start
    e.g. pi-hermes-memory/skills/, projects-memory/*/skills/)
         ↓                         ↓
   cachedSkills[]              skill-gate.json
-  (Skill: name, desc,         (per-skill state)
-   filePath, disableModelInvocation)
+  (Skill: name, desc,         (global skills + per-project
+   filePath, disableModelInvocation)   overrides keyed by abs path)
         ↓                         ↓
-  SkillDetailOverlay ←── loadState() / persistToggle()
+  SkillDetailOverlay ←── loadEffectiveState() / persistToggle(scope)
         ↓
-  before_agent_start hook (in-memory filter)
+  before_agent_start hook (in-memory filter, project-aware)
         ↓
   buildVisibleBlock() → injected into system prompt
 ```
+
+### State resolution
+
+Effective state is resolved per-skill: **project override** → **global** → **disabled** (default). The `before_agent_start` hook passes `ctx.cwd` as the project path, so per-project toggles take effect automatically when running an agent from that directory.
+
+### Editing scope
+
+When opened from a project directory, the overlay defaults to **global** editing scope. Press `g` to switch to project-level editing. The sidebar shows `·G` indicators for skills inherited from global (project scope) and `·P` for skills overridden at the project level (global scope). Skills that are enabled globally but explicitly disabled by a project override render in red.
 
 ### Skill discovery
 
