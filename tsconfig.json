@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["index.ts"]
+  "include": ["index.ts", "overlay.ts", "types.ts", "*.test.ts"]
 }

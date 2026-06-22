@@ -9,38 +9,18 @@
  */
 
 import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent";
-import { DefaultResourceLoader, getAgentDir, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import {
-  decodeKittyPrintable,
-  Key,
-  matchesKey,
-  Markdown,
-  truncateToWidth,
-  visibleWidth,
-} from "@earendil-works/pi-tui";
+import { DefaultResourceLoader, getAgentDir } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { homedir } from "node:os";
+import type { EditScope, RowData, SkillGateConfig, SkillGateTheme, SkillVisibility, ToggleState } from "./types.js";
+import { SkillDetailOverlay } from "./overlay.js";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface ProjectSkillConfig { skills: Record<string, ToggleState>; }
-interface SkillGateConfig {
-  skills: Record<string, ToggleState>;
-  projects: Record<string, ProjectSkillConfig>;
-}
-type ToggleState = "enabled" | "disabled";
-type EditScope = "global" | "project";
-
-// ---------------------------------------------------------------------------
-// Config persistence
-// ---------------------------------------------------------------------------
+// ── Config persistence ──
 
 const CONFIG_PATH = path.join(homedir(), ".pi", "agent", "config", "skill-gate.json");
 
-function loadConfig(): SkillGateConfig {
+export function loadConfig(): SkillGateConfig {
   if (!fs.existsSync(CONFIG_PATH)) return { skills: {}, projects: {} };
   try {
     const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
@@ -51,13 +31,13 @@ function loadConfig(): SkillGateConfig {
     return { skills: {}, projects: {} };
   }
 }
-function saveConfig(c: SkillGateConfig): void {
+export function saveConfig(c: SkillGateConfig): void {
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2), "utf-8");
 }
 
 /** Resolve effective state: project override → global → default "disabled". */
-function loadEffectiveState(name: string, config: SkillGateConfig, projectPath?: string): { state: ToggleState; source: "global" | "project" | "default" } {
+export function loadEffectiveState(name: string, config: SkillGateConfig, projectPath?: string): { state: ToggleState; source: "global" | "project" | "default" } {
   if (projectPath) {
     const proj = config.projects?.[projectPath]?.skills?.[name];
     if (proj === "enabled" || proj === "disabled") return { state: proj, source: "project" };
@@ -69,7 +49,7 @@ function loadEffectiveState(name: string, config: SkillGateConfig, projectPath?:
 
 /** Persist a toggle to the given scope. Cleans up redundant project overrides
  *  (entries that match the global effective state are removed). */
-function persistToggle(name: string, value: ToggleState, config: SkillGateConfig, scope: EditScope, projectPath?: string): void {
+export function persistToggle(name: string, value: ToggleState, config: SkillGateConfig, scope: EditScope, projectPath?: string): void {
   if (scope === "global") {
     if (value === "disabled") {
       delete config.skills[name];
@@ -93,61 +73,21 @@ function persistToggle(name: string, value: ToggleState, config: SkillGateConfig
   saveConfig(config);
 }
 
-// ---------------------------------------------------------------------------
-// Cached skills from ResourceLoader (populated at session_start)
-// ---------------------------------------------------------------------------
+// ── Cached skills from ResourceLoader (populated at session_start) ──
 
 let cachedSkills: Skill[] = [];
 
-// ---------------------------------------------------------------------------
-// Skill body reader
-// ---------------------------------------------------------------------------
+// ── System prompt injection ──
 
-const _skillBodyCache = new Map<string, string>();
-
-/** Read the full SKILL.md body (everything after YAML frontmatter). */
-function readSkillBody(filePath: string): string {
-  if (_skillBodyCache.has(filePath)) return _skillBodyCache.get(filePath)!;
-  let result: string;
-  try {
-    const raw = fs.readFileSync(filePath, "utf-8");
-    const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
-    result = body || "(No content)";
-  } catch {
-    result = "(Unable to read skill file)";
-  }
-  _skillBodyCache.set(filePath, result);
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// System prompt injection
-// ---------------------------------------------------------------------------
-
-function buildVisibleBlock(rows: { name: string; state: ToggleState; description: string; disableModelInvocation: boolean }[]): string | null {
+export function buildVisibleBlock(rows: SkillVisibility[]): string | null {
   const visible = rows.filter((r) => !r.disableModelInvocation && r.state === "enabled");
   if (visible.length === 0) return null;
   return `<available_skills>\n${visible.map((r) => `- ${r.name}: ${r.description}`).join("\n")}\n</available_skills>`;
 }
 
-// ---------------------------------------------------------------------------
-// Theme
-// ---------------------------------------------------------------------------
+// ── Theme factory ──
 
-interface SkillGateTheme {
-  accent: (t: string) => string;
-  dim: (t: string) => string;
-  muted: (t: string) => string;
-  warning: (t: string) => string;
-  error: (t: string) => string;
-  bold: (t: string) => string;
-  enabled: (t: string) => string;
-  selCell: (t: string) => string;
-  selRow: (t: string) => string;
-  nativeDisabled: (t: string) => string;
-}
-
-function makeTheme(piTheme: any): SkillGateTheme {
+export function makeTheme(piTheme: any): SkillGateTheme {
   return {
     accent: (t: string) => piTheme.fg("accent", t),
     dim: (t: string) => piTheme.fg("dim", t),
@@ -162,689 +102,7 @@ function makeTheme(piTheme: any): SkillGateTheme {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Table row data
-// ---------------------------------------------------------------------------
-
-interface RowData {
-  name: string;
-  description: string;
-  filePath: string;
-  disableModelInvocation: boolean;
-  state: ToggleState;
-  source: "global" | "project" | "default";
-  globalEnabled: boolean;
-}
-
-function wrapText(text: string, maxWidth: number): string[] {
-  if (maxWidth <= 0) return [];
-  const words = text.split(/\s+/);
-  const lines: string[] = [];
-  let cur = "";
-  for (const word of words) {
-    if (!cur) { cur = word; continue; }
-    if (cur.length + 1 + word.length <= maxWidth) { cur += " " + word; }
-    else { lines.push(cur); cur = word; }
-  }
-  if (cur) lines.push(cur);
-  return lines.length > 0 ? lines : [""];
-}
-
-// ---------------------------------------------------------------------------
-// Skill Detail Overlay
-// ---------------------------------------------------------------------------
-
-/** Fraction of page height to jump on k/j (keep 25% overlap for context). */
-const SCROLL_FRACTION = 0.75;
-
-/** Highlight the first occurrence of query in text using ANSI styles. */
-function highlightMatch(text: string, query: string, baseStyle: (t: string) => string, matchStyle: (t: string) => string): string {
-  if (!query) return baseStyle(text);
-  const lower = text.toLowerCase();
-  const qi = lower.indexOf(query.toLowerCase());
-  if (qi < 0) return baseStyle(text);
-  return baseStyle(text.slice(0, qi)) + matchStyle(text.slice(qi, qi + query.length)) + baseStyle(text.slice(qi + query.length));
-}
-
-class SkillDetailOverlay {
-  private rows: RowData[];
-  private currentIdx: number;
-  private scrollOffset = 0;
-  private getTerminalRows: () => number;
-  private theme: SkillGateTheme;
-  private md: Markdown;
-  private showSidebar = true;
-  private searchMode = false;
-  private searchQuery = "";
-  private editingScope: EditScope;
-  private projectName?: string;
-  private hasProject: boolean;
-
-  onClose?: () => void;
-  onToggle?: (name: string, state: ToggleState) => void;
-  onInvoke?: (name: string) => void;
-  onScopeToggle?: () => void;
-
-  constructor(rows: RowData[], initialIdx: number, getTerminalRows: () => number, theme: SkillGateTheme, editingScope: EditScope, projectName?: string, hasProject = false) {
-    this.rows = rows;
-    this.currentIdx = Math.max(0, Math.min(initialIdx, rows.length - 1));
-    this.getTerminalRows = getTerminalRows;
-    this.theme = theme;
-    this.md = new Markdown("", 2, 0, getMarkdownTheme());
-    this.editingScope = editingScope;
-    this.projectName = projectName;
-    this.hasProject = hasProject;
-  }
-
-  setEditingScope(scope: EditScope): void {
-    this.editingScope = scope;
-  }
-
-  handleInput(data: string): void {
-    if (this.rows.length === 0) return;
-
-    // ── search mode ──
-    if (this.searchMode) {
-      if (matchesKey(data, Key.escape)) {
-        this.searchMode = false;
-        this.searchQuery = "";
-        return;
-      }
-      if (matchesKey(data, Key.enter)) {
-        this.searchMode = false;
-        return;
-      }
-      if (matchesKey(data, Key.backspace)) {
-        this.searchQuery = this.searchQuery.slice(0, -1);
-        this.onSearchQueryChanged();
-        return;
-      }
-      if (matchesKey(data, Key.up)) {
-        const f = this.getFilteredIndices();
-        const pos = f.indexOf(this.currentIdx);
-        if (pos > 0) this.currentIdx = f[pos - 1];
-        else if (f.length > 0) this.currentIdx = f[f.length - 1];
-        this.scrollOffset = 0;
-        return;
-      }
-      if (matchesKey(data, Key.down)) {
-        const f = this.getFilteredIndices();
-        const pos = f.indexOf(this.currentIdx);
-        if (pos >= 0 && pos < f.length - 1) this.currentIdx = f[pos + 1];
-        else if (f.length > 0) this.currentIdx = f[0];
-        this.scrollOffset = 0;
-        return;
-      }
-      if (matchesKey(data, Key.home)) {
-        this.scrollOffset = 0;
-        return;
-      }
-      if (matchesKey(data, Key.end)) {
-        this.scrollOffset = Number.MAX_SAFE_INTEGER;
-        return;
-      }
-      // Printable characters — append to query
-      const ch = decodeKittyPrintable(data);
-      const printable = ch ?? data;
-      if (printable.length === 1 && printable >= " ") {
-        this.searchQuery += printable;
-        this.onSearchQueryChanged();
-        return;
-      }
-      return; // ignore other keys while searching
-    }
-
-    // ── enter search mode on "/" ──
-    if (data === "/" || matchesKey(data, Key.slash)) {
-      this.searchMode = true;
-      this.searchQuery = "";
-      return;
-    }
-
-    if (matchesKey(data, Key.up)) {
-      this.currentIdx = (this.currentIdx - 1 + this.rows.length) % this.rows.length;
-      this.scrollOffset = 0;
-      return;
-    }
-    if (matchesKey(data, Key.down)) {
-      this.currentIdx = (this.currentIdx + 1) % this.rows.length;
-      this.scrollOffset = 0;
-      return;
-    }
-    if (matchesKey(data, Key.left)) {
-      // no action — use up/down to navigate
-      return;
-    }
-    if (matchesKey(data, Key.escape)) {
-      this.onClose?.();
-      return;
-    }
-    if (data === "b" || data === "B") {
-      this.showSidebar = !this.showSidebar;
-      return;
-    }
-    if ((data === "g" || data === "G") && this.hasProject) {
-      this.onScopeToggle?.();
-      return;
-    }
-    if (matchesKey(data, Key.space)) {
-      const row = this.rows[this.currentIdx];
-      if (row && !row.disableModelInvocation) {
-        row.state = row.state === "enabled" ? "disabled" : "enabled";
-        this.onToggle?.(row.name, row.state);
-      }
-      return;
-    }
-    if (matchesKey(data, Key.enter)) {
-      const row = this.rows[this.currentIdx];
-      if (row) this.onInvoke?.(row.name);
-      return;
-    }
-    if (data == "k") {
-      this.scrollOffset = Math.max(0, this.scrollOffset - Math.ceil(this.bodyHeightEstimate() * SCROLL_FRACTION));
-      return;
-    }
-    if (data == "j") {
-      this.scrollOffset += Math.ceil(this.bodyHeightEstimate() * SCROLL_FRACTION);
-      return;
-    }
-    if (matchesKey(data, Key.home)) {
-      this.scrollOffset = 0;
-      return;
-    }
-    if (matchesKey(data, Key.end)) {
-      this.scrollOffset = Number.MAX_SAFE_INTEGER;
-      return;
-    }
-  }
-
-  /** Compute filtered skill indices ordered by match quality (prefix first, then substring). */
-  private getFilteredIndices(): number[] {
-    const q = this.searchQuery.toLowerCase();
-    if (!q || !this.searchMode) return this.rows.map((_, i) => i);
-    const prefix: number[] = [];
-    const substr: number[] = [];
-    for (let i = 0; i < this.rows.length; i++) {
-      const name = this.rows[i].name.toLowerCase();
-      if (name.startsWith(q)) {
-        prefix.push(i);
-      } else if (name.includes(q)) {
-        substr.push(i);
-      }
-    }
-    prefix.sort((a, b) => this.rows[a].name.localeCompare(this.rows[b].name));
-    substr.sort((a, b) => this.rows[a].name.localeCompare(this.rows[b].name));
-    return [...prefix, ...substr];
-  }
-
-  /** Called when the search query changes: jump to the best match. */
-  private onSearchQueryChanged(): void {
-    const filtered = this.getFilteredIndices();
-    if (filtered.length === 0) { this.scrollOffset = 0; return; }
-    if (!filtered.includes(this.currentIdx)) {
-      this.currentIdx = filtered[0];
-    }
-    this.scrollOffset = 0;
-  }
-
-  // ── sidebar width (based on longest skill name + ▶ indicator) ──
-  private sidebarWidth(): number {
-    const maxLen = Math.max(...this.rows.map((r) => r.name.length), 0);
-    // Extra room for ·G / ·P indicators when project-context is active
-    const indicatorPad = this.hasProject ? 3 : 0;
-    return Math.max(14, Math.min(28, maxLen + 4 + indicatorPad));
-  }
-
-  /** Rough estimate of available body lines for scroll calculations. */
-  private bodyHeightEstimate(): number {
-    return Math.max(8, Math.floor(this.getTerminalRows() * 0.5));
-  }
-
-  // ── render sidebar column (height lines, sidebarW wide) ──
-  // When in search mode, only matching skills are shown with highlighted search terms.
-  private renderSidebar(height: number, sidebarW: number): string[] {
-    const T = this.theme;
-    const lines: string[] = [];
-    const skillArea = Math.max(0, height - 2); // header + separator
-
-    const filtered = this.searchMode ? this.getFilteredIndices() : this.rows.map((_, i) => i);
-    const total = filtered.length;
-
-    // Auto-scroll to keep selected skill visible
-    let sbScroll = 0;
-    if (total > skillArea) {
-      const selPos = filtered.indexOf(this.currentIdx);
-      sbScroll = Math.max(0, selPos - Math.floor(skillArea / 2));
-      sbScroll = Math.min(sbScroll, total - skillArea);
-    }
-
-    const leftLabel = T.dim(" Skills");
-    const idxLabel = T.accent(`[${this.currentIdx + 1}/${this.rows.length}]`);
-    const leftVw = visibleWidth(leftLabel);
-    const idxVw = visibleWidth(idxLabel);
-    const gap = Math.max(1, sidebarW - leftVw - idxVw);
-    const sbHeader = leftLabel + " ".repeat(gap) + idxLabel;
-    lines.push(sbHeader);
-    lines.push(T.dim("─".repeat(sidebarW)));
-
-    if (total === 0 && this.searchMode) {
-      // No matches
-      const msg = T.dim(" (no matches)");
-      lines.push(msg + " ".repeat(Math.max(0, sidebarW - visibleWidth(msg))));
-    } else {
-      // Account for potential ·G/·P indicator when computing name truncation
-      const indicatorBudget = this.hasProject ? visibleWidth(T.dim(" ·G")) : 0;
-
-      for (let i = 0; i < skillArea; i++) {
-        const li = i + sbScroll;
-        const ri = filtered[li];
-        if (ri !== undefined) {
-          const r = this.rows[ri];
-          const isCurrent = ri === this.currentIdx;
-          const arrow = isCurrent ? " " + T.accent("▶") : "  ";
-
-          // Determine base styling for this row
-          let baseStyle: (t: string) => string;
-          if (r.disableModelInvocation) {
-            baseStyle = (t) => T.nativeDisabled(t);
-          } else if (r.state === "enabled") {
-            baseStyle = (t) => T.enabled(t);
-          } else if (r.source === "project" && r.globalEnabled) {
-            // Enabled globally but explicitly disabled by project override
-            baseStyle = (t) => T.error(t);
-          } else {
-            baseStyle = (t) => T.dim(t);
-          }
-
-          // Highlight search match within the name
-          let styledName: string;
-          if (this.searchMode && this.searchQuery) {
-            styledName = highlightMatch(r.name, this.searchQuery, baseStyle, (t) => T.accent(T.bold(t)));
-          } else {
-            styledName = baseStyle(r.name);
-          }
-          styledName = truncateToWidth(styledName, sidebarW - 4 - indicatorBudget);
-
-          // Build final row
-          let styled: string;
-          if (isCurrent) {
-            styled = T.accent(arrow + " " + styledName);
-          } else {
-            styled = arrow + styledName;
-          }
-
-          // Source inheritance indicator
-          if (!r.disableModelInvocation) {
-            if (this.editingScope === "project" && r.source === "global") {
-              styled += T.dim(" ·G");
-            } else if (this.editingScope === "global" && r.source === "project") {
-              styled += T.dim(" ·P");
-            }
-          }
-
-          // Pad by visible width (ANSI escape codes inflate .length, breaking .padEnd)
-          const vw = visibleWidth(styled);
-          lines.push(vw < sidebarW ? styled + " ".repeat(sidebarW - vw) : styled);
-        } else {
-          lines.push(" ".repeat(sidebarW));
-        }
-      }
-    }
-
-    return lines;
-  }
-
-  // ── render detail column (unbordered — borders added by merge or full-width path) ──
-  // footerLines: how many footer lines we expect (used for body-budget subtraction).
-  private renderDetail(detailW: number, contentBudget: number, footerLines = 1): {
-    descLines: string[];
-    bodyLines: string[];
-    mdMeta: { bodyLength: number; remaining: number; maxOffset: number; needsScrollbar: boolean; thumbH: number; thumbStart: number; gutterW: number; contentW: number };
-  } {
-    const T = this.theme;
-    const row = this.rows[this.currentIdx]!;
-    const padW = Math.max(detailW - 4, 12);
-
-    // ── description section ──
-    const descLines: string[] = [];
-
-    // Skill name
-    descLines.push(" " + T.accent(T.bold(row.name)));
-
-    // Status line
-    const native = row.disableModelInvocation;
-    if (native) {
-      descLines.push(" " + T.bold("Status: ") + T.nativeDisabled("(natively disabled)"));
-    } else {
-      const st = row.state === "enabled" ? T.enabled("enabled") : T.error("disabled");
-      let sourceCtx = "";
-      let toggleHint = T.dim("  [space to toggle]");
-      if (this.editingScope === "project" && row.source === "global") {
-        sourceCtx = T.dim(" · inherited from global");
-        toggleHint = T.dim("  [space to override]");
-      } else if (this.editingScope === "global" && row.source === "project") {
-        sourceCtx = T.dim(" · overridden at project level");
-      }
-      descLines.push(" " + T.bold("Status: ") + st + sourceCtx + toggleHint);
-    }
-
-    if (row.description) {
-      descLines.push(T.bold(" Description:"));
-      for (const dl of wrapText(row.description, padW)) {
-        descLines.push("  " + T.muted(dl));
-      }
-      descLines.push("");
-    }
-
-    // ── budget: ensure total overlay height stays within bounds ──
-    // Desc + prompt header(2) + body + borderline(1) + footer(N) = descLines + bodyLines + 3 + N
-    // All of this must fit within contentBudget lines.
-    const MIN_BODY = 6; // minimum visible body lines
-    const BODY_CHROME = 3 + footerLines; // prompt header(2) + borderline(1) + footer(N)
-    const maxDesc = contentBudget - MIN_BODY - BODY_CHROME;
-    if (descLines.length > maxDesc) {
-      descLines.length = maxDesc;
-      descLines[maxDesc - 1] = "  " + T.dim("…");
-    }
-    const remaining = Math.max(MIN_BODY, contentBudget - descLines.length - BODY_CHROME);
-    const body = readSkillBody(row.filePath);
-
-    // Loop: render, measure gutter + scroll, adjust contentW, repeat until stable.
-    // The gutter expands at 100/1000-line thresholds; scrollbar can appear/disappear
-    // when contentW shrinks/grows. A three-pass loop covers all edge cases.
-    let gutterW = 4;
-    let scrollW = 1;
-    let needsScrollbar = true;
-    // contentW must be positive — Markdown.render() uses String.repeat(width)
-    // internally and will crash with a negative or zero value.
-    const MIN_CONTENT_W = 10;
-    let contentW = Math.max(MIN_CONTENT_W, detailW - gutterW - scrollW);
-    this.md.setText(body);
-    let mdLines = this.md.render(contentW);
-    for (let pass = 0; pass < 3; pass++) {
-      const prevGutterW = gutterW;
-      const prevScrollW = scrollW;
-      gutterW = Math.max(3, String(mdLines.length).length + 2);
-      needsScrollbar = mdLines.length > remaining;
-      scrollW = needsScrollbar ? 1 : 0;
-      if (gutterW === prevGutterW && scrollW === prevScrollW) break;
-      contentW = Math.max(MIN_CONTENT_W, detailW - gutterW - scrollW);
-      this.md.setText(body);
-      mdLines = this.md.render(contentW);
-    }
-
-    const maxOffset = Math.max(0, mdLines.length - remaining);
-    this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxOffset));
-
-    const thumbH = needsScrollbar ? Math.max(1, Math.round(remaining * remaining / Math.max(1, mdLines.length))) : 0;
-    const thumbStart = needsScrollbar && maxOffset > 0 ? Math.round(this.scrollOffset / maxOffset * (remaining - thumbH)) : 0;
-
-    const gutterFmt = (n: number) => T.dim(String(n).padStart(gutterW - 2) + " │");
-
-    const bodyLines: string[] = [];
-    const endLine = Math.min(this.scrollOffset + remaining, mdLines.length);
-    for (let i = this.scrollOffset; i < endLine; i++) {
-      const rel = i - this.scrollOffset;
-      const gutter = gutterFmt(i + 1);
-
-      let sc = "";
-      if (needsScrollbar) {
-        const isThumb = rel >= thumbStart && rel < thumbStart + thumbH;
-        sc = isThumb ? T.accent("█") : T.dim("░");
-      }
-
-      const mdLine = mdLines[i];
-      const mdVw = visibleWidth(mdLine);
-      const paddedMd = mdVw < contentW ? mdLine + " ".repeat(contentW - mdVw) : truncateToWidth(mdLine, contentW);
-      bodyLines.push(gutter + paddedMd + sc);
-    }
-
-    // Fill remaining
-    const shown = endLine - this.scrollOffset;
-    for (let i = shown; i < remaining; i++) {
-      let sc = "";
-      if (needsScrollbar) {
-        sc = (i >= thumbStart && i < thumbStart + thumbH) ? T.accent("█") : T.dim("░");
-      }
-      bodyLines.push(" ".repeat(gutterW) + " ".repeat(contentW) + sc);
-    }
-
-    return {
-      descLines,
-      bodyLines,
-      mdMeta: { bodyLength: mdLines.length, remaining, maxOffset, needsScrollbar, thumbH, thumbStart, gutterW, contentW },
-    };
-  }
-
-  render(width: number): string[] {
-    const T = this.theme;
-    const row = this.rows[this.currentIdx];
-    if (!row) return [T.warning(" No skill selected")];
-
-    const innerW = Math.max(width - 2, 20);
-    const lines: string[] = [];
-
-    // ── top border ──
-    lines.push(T.dim("┌" + "─".repeat(innerW) + "┐"));
-
-    // ── title bar (full width) ──
-    const vc = this.rows.filter((r) => !r.disableModelInvocation && r.state === "enabled").length;
-    const tc = this.rows.length;
-    const projLabel = this.projectName ? T.dim(` · ${this.projectName}`) : "";
-    lines.push(borderLine(" " + T.accent(T.bold(" Skill Gate")) + projLabel + T.dim(` ── ${vc}/${tc} skills enabled`), innerW, T));
-    const subtitleW = innerW - 2; // account for leading spaces + border
-    let headerLines: number;
-    if (this.searchMode) {
-      // ── search bar (replaces subtitle when active) ──
-      const cursor = this.theme.accent("█");
-      const searchLabel = this.theme.dim(" /") + " " + this.searchQuery + cursor;
-      lines.push(borderLine(searchLabel, innerW, T));
-      headerLines = 1; // search bar
-    } else if (this.hasProject) {
-      // ── scope indicator line (replaces generic subtitle) ──
-      const otherScope = this.editingScope === "global" ? "project" : "global";
-      const scopeLabel = T.dim(`  Editing: ${this.editingScope}`) + T.muted(`  [g] edit ${otherScope}`);
-      lines.push(borderLine(scopeLabel, innerW, T));
-      headerLines = 1;
-    } else {
-      const subtitle = "Control which skills the model can see. Enabled skills are injected into the system prompt; disabled skills are hidden.";
-      const subtitleLines = wrapText(subtitle, subtitleW);
-      for (const sl of subtitleLines) {
-        lines.push(borderLine(T.muted("  " + sl), innerW, T));
-      }
-      headerLines = subtitleLines.length;
-    }
-
-    lines.push(T.dim("│" + T.dim("─".repeat(innerW)) + "│"));
-
-    // ── dynamic height: match maxHeight "80%" overlay option ──
-    const termRows = this.getTerminalRows();
-    const overlayMax = Math.max(12, Math.floor(termRows * 0.8));
-    const chrome = 3 + headerLines; // top border, title, header lines, separator
-    const bottom = 1;                         // bottom border
-    const contentBudget = Math.max(10, overlayMax - chrome - bottom);
-
-    // ── layout: sidebar (toggleable) + detail ──
-    // Fall back to full-width when the detail column would be too narrow.
-    const sidebarW = this.sidebarWidth();
-    const detailW = innerW - sidebarW - 1;
-    const useSidebar = this.showSidebar && detailW >= 20;
-
-    if (useSidebar) {
-
-      // Two-pass rendering: compute footer lines first, then re-allocate body budget.
-      // This keeps the overlay height stable when the footer wraps to multiple lines.
-      let { descLines, bodyLines, mdMeta } = this.renderDetail(detailW, contentBudget, 1);
-      let wrappedFooter = this.footerLines(mdMeta, detailW);
-      if (wrappedFooter.length > 1) {
-        const adjustedBudget = contentBudget - (wrappedFooter.length - 1);
-        ({ descLines, bodyLines, mdMeta } = this.renderDetail(detailW, adjustedBudget, wrappedFooter.length));
-        wrappedFooter = this.footerLines(mdMeta, detailW);
-      }
-
-      // Body area height = description + prompt header + body + borderline + footer
-      const promptHeader = [" " + T.bold("Prompt:"), ""];
-      const bodyHeight = descLines.length + promptHeader.length + bodyLines.length + 1 + wrappedFooter.length; // +1 for borderline + N for footer
-
-      const sidebarLines = this.renderSidebar(bodyHeight, sidebarW);
-
-      // Merge detail: desc + prompt + body + borderline + footer
-      const detailAll: string[] = [
-        ...descLines.map((l) => padTo(l, detailW)),
-        ...promptHeader.map((l) => padTo(l, detailW)),
-        ...bodyLines.map((l) => padTo(l, detailW)),
-        padTo(T.dim("─".repeat(detailW)), detailW),
-        ...wrappedFooter.map((l) => padTo(l, detailW)),
-      ];
-
-      // Ensure sidebar matches detail height
-      while (sidebarLines.length < detailAll.length) sidebarLines.push(" ".repeat(sidebarW));
-      while (detailAll.length < sidebarLines.length) detailAll.push(" ".repeat(detailW));
-
-      for (let i = 0; i < sidebarLines.length; i++) {
-        lines.push(T.dim("│") + sidebarLines[i] + T.dim("│") + detailAll[i] + T.dim("│"));
-      }
-    } else {
-      // ── full-width (no sidebar) ──
-      let { descLines, bodyLines, mdMeta } = this.renderDetail(innerW, contentBudget, 1);
-      let wrappedFooter = this.footerLines(mdMeta, innerW - 2);
-      if (wrappedFooter.length > 1) {
-        const adjustedBudget = contentBudget - (wrappedFooter.length - 1);
-        ({ descLines, bodyLines, mdMeta } = this.renderDetail(innerW, adjustedBudget, wrappedFooter.length));
-        wrappedFooter = this.footerLines(mdMeta, innerW - 2);
-      }
-
-      for (const dl of descLines) lines.push(borderLine(dl, innerW, T));
-      lines.push(borderLine(" " + T.bold("Prompt:"), innerW, T));
-      lines.push(borderLine("", innerW, T));
-      for (const bl of bodyLines) lines.push(T.dim("│") + bl + T.dim("│"));
-      lines.push(T.dim("│" + T.dim("─".repeat(innerW)) + "│"));
-      for (const fl of wrappedFooter) lines.push(borderLine(fl, innerW, T));
-    }
-
-    // ── bottom border ──
-    lines.push(T.dim("└" + "─".repeat(innerW) + "┘"));
-
-    return lines;
-  }
-
-  /** Wrap the footer text to fit maxW and return styled lines. */
-  private footerLines(meta: { bodyLength: number; remaining: number; maxOffset: number }, maxW: number): string[] {
-    // Build the raw left-side text (scroll info + keybindings).
-    const hasMore = meta.bodyLength > meta.remaining;
-    const scopeKey = this.hasProject ? " · g scope" : "";
-    let left: string;
-    if (this.searchMode) {
-      left = " / search · Esc cancel · Enter confirm";
-    } else if (hasMore) {
-      const pct = meta.maxOffset > 0 ? Math.round((this.scrollOffset / meta.maxOffset) * 100) : 0;
-      const up = this.scrollOffset > 0 ? "↑" : " ";
-      const endLine = Math.min(this.scrollOffset + meta.remaining, meta.bodyLength);
-      const dn = endLine < meta.bodyLength ? "↓" : " ";
-      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · / search · b sidebar${scopeKey} · enter invoke · Esc close`;
-    } else {
-      left = ` ↑↓ skill · / search · b sidebar${scopeKey} · enter invoke · Esc close`;
-    }
-    const idx = this.searchMode
-      ? (() => {
-          const fi = this.getFilteredIndices();
-          const pos = fi.indexOf(this.currentIdx);
-          return this.theme.accent(`[${pos >= 0 ? pos + 1 : 0}/${fi.length}]`);
-        })()
-      : this.theme.accent(`[${this.currentIdx + 1}/${this.rows.length}]`);
-
-    // Wrap the left text, leaving room for the index on the last line.
-    const idxVw = visibleWidth(idx);
-    const lastLineW = maxW - idxVw - 1;
-
-    let wrapped: string[];
-    if (lastLineW > 10) {
-      // Wrap everything at full width so the first lines use the full space.
-      wrapped = wrapText(left, maxW);
-      if (wrapped.length === 1) {
-        // Check whether the index fits on this single line.
-        const lVw = visibleWidth(wrapped[0]);
-        if (lVw + 1 + idxVw <= maxW) {
-          // Fits — right-align the index inline.
-          const gap = maxW - lVw - idxVw;
-          wrapped[0] = wrapped[0] + " ".repeat(gap) + idx;
-        } else {
-          // Doesn't fit — push the index to its own line, right-aligned.
-          wrapped.push(" ".repeat(Math.max(0, maxW - idxVw)) + idx);
-        }
-      } else {
-        // Multi-line: put the index on the last line, right-aligned.
-        // Re-wrap the last line to make room for the index.
-        const last = wrapped[wrapped.length - 1];
-        const lastRewrapped = wrapText(last, lastLineW);
-        wrapped[wrapped.length - 1] = lastRewrapped[0];
-        // Append remaining rewrapped lines (edge case) + index on final line.
-        for (let i = 1; i < lastRewrapped.length; i++) wrapped.push(lastRewrapped[i]);
-        const finalVw = visibleWidth(wrapped[wrapped.length - 1]);
-        if (finalVw + 1 + idxVw <= maxW) {
-          const finalGap = maxW - finalVw - idxVw;
-          wrapped[wrapped.length - 1] += " ".repeat(finalGap) + idx;
-        } else {
-          wrapped.push(" ".repeat(Math.max(0, maxW - idxVw)) + idx);
-        }
-      }
-    } else {
-      // Extremely narrow – wrap everything at full width, index on its own line.
-      wrapped = wrapText(left, maxW);
-      wrapped.push(" ".repeat(Math.max(0, maxW - idxVw)) + idx);
-    }
-
-    return wrapped.map((l) => this.theme.dim(l));
-  }
-
-  private footerLine(detailW: number, meta: { bodyLength: number; remaining: number; maxOffset: number }): string {
-    const raw = this.footerText(meta, detailW - 2);
-    const styled = this.theme.dim(raw);
-    const vw = visibleWidth(styled);
-    return vw < detailW ? styled + " ".repeat(detailW - vw) : truncateToWidth(styled, detailW);
-  }
-
-  private footerText(meta: { bodyLength: number; remaining: number; maxOffset: number }, maxW: number): string {
-    const hasMore = meta.bodyLength > meta.remaining;
-    const scopeKey = this.hasProject ? " · g scope" : "";
-    let left: string;
-    if (hasMore) {
-      const pct = meta.maxOffset > 0 ? Math.round((this.scrollOffset / meta.maxOffset) * 100) : 0;
-      const up = this.scrollOffset > 0 ? "↑" : " ";
-      const endLine = Math.min(this.scrollOffset + meta.remaining, meta.bodyLength);
-      const dn = endLine < meta.bodyLength ? "↓" : " ";
-      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · b sidebar${scopeKey} · enter invoke · Esc close`;
-    } else {
-      left = ` ↑↓ skill · b sidebar${scopeKey} · enter invoke · Esc close`;
-    }
-    const idx = this.theme.accent(`[${this.currentIdx + 1}/${this.rows.length}]`);
-    const leftVw = visibleWidth(left);
-    const idxVw = visibleWidth(idx);
-    const gap = Math.max(1, maxW - leftVw - idxVw);
-    return left + " ".repeat(gap) + idx;
-  }
-
-  invalidate(): void {
-    this.md.invalidate();
-  }
-}
-
-/** Wrap a content line with │ border characters, padding to innerW visible width. */
-function borderLine(content: string, innerW: number, T: SkillGateTheme): string {
-  const vw = visibleWidth(content);
-  const padded = vw < innerW ? content + " ".repeat(innerW - vw) : truncateToWidth(content, innerW);
-  return T.dim("│") + padded + T.dim("│");
-}
-
-/** Pad a string to the given visible width with trailing spaces. */
-function padTo(content: string, width: number): string {
-  const vw = visibleWidth(content);
-  return vw < width ? content + " ".repeat(width - vw) : content;
-}
-
-// ---------------------------------------------------------------------------
-// Extension
-// ---------------------------------------------------------------------------
+// ── Extension ──
 
 export default function (pi: ExtensionAPI) {
   // Populate skill cache from ResourceLoader at session start (before any agent).
@@ -886,16 +144,13 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     const config = loadConfig();
     const projectPath = ctx.cwd !== homedir() ? ctx.cwd : undefined;
-    const rows = cachedSkills.map((s) => {
+    const rows: SkillVisibility[] = cachedSkills.map((s) => {
       const { state } = loadEffectiveState(s.name, config, projectPath);
       return {
         name: s.name,
         description: s.description,
-        filePath: s.filePath,
         disableModelInvocation: s.disableModelInvocation,
         state,
-        source: "global" as const, // not consumed by buildVisibleBlock
-        globalEnabled: false,       // not consumed by buildVisibleBlock
       };
     });
     let prompt = event.systemPrompt.replace(/\n<available_skills>[\s\S]*?<\/available_skills>\n/g, "\n");

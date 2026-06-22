@@ -1,6 +1,6 @@
 {
   "name": "pi-skill-gate",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Interactive skill visibility manager for pi coding agent — browse, toggle, and invoke skills from a keyboard-driven TUI overlay.",
   "keywords": [
     "pi-package",
@@ -19,11 +19,15 @@
   "type": "module",
   "files": [
     "index.ts",
+    "overlay.ts",
+    "types.ts",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "pi": {
     "extensions": [
@@ -46,7 +50,8 @@
     "@earendil-works/pi-coding-agent": "^0.79.0",
     "@earendil-works/pi-tui": "^0.79.0",
     "@types/node": "^22.19.10",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.9"
   },
   "engines": {
     "node": ">=22"
