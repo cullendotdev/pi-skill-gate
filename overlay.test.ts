@@ -749,3 +749,274 @@ describe("SkillDetailOverlay.handleInput (normal mode)", () => {
     expect(() => overlay.handleInput("KEY_DOWN")).not.toThrow();
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+//  Bulk actions — confirm modal
+// ═══════════════════════════════════════════════════════════
+
+describe("SkillDetailOverlay.handleInput (bulk actions)", () => {
+  function makeOverlay(rows: RowData[], idx = 0, hasProject = false) {
+    return new SkillDetailOverlay(
+      rows,
+      idx,
+      () => 40,
+      T,
+      "global",
+      hasProject ? "test-proj" : undefined,
+      hasProject,
+    );
+  }
+
+  // ── opening the modal ──
+
+  it("a opens a confirm modal (no callback yet)", () => {
+    const overlay = makeOverlay(makeRows());
+    let fired = false;
+    overlay.onEnableAll = () => { fired = true; };
+    overlay.handleInput("a");
+    expect(fired).toBe(false);
+    expect((overlay as any).pendingConfirm).not.toBeNull();
+    expect((overlay as any).pendingConfirm.kind).toBe("enableAll");
+  });
+
+  it("A opens a confirm modal (no callback yet)", () => {
+    const overlay = makeOverlay(makeRows());
+    let fired = false;
+    overlay.onDisableAll = () => { fired = true; };
+    overlay.handleInput("A");
+    expect(fired).toBe(false);
+    expect((overlay as any).pendingConfirm).not.toBeNull();
+    expect((overlay as any).pendingConfirm.kind).toBe("disableAll");
+  });
+
+  it("r opens a confirm modal (no callback yet)", () => {
+    // makeRows has 3 global toggles (alpha-skill, gamma-tool, alpha-tool)
+    const overlay = makeOverlay(makeRows());
+    let fired = false;
+    overlay.onResetScope = () => { fired = true; };
+    overlay.handleInput("r");
+    expect(fired).toBe(false);
+    expect((overlay as any).pendingConfirm).not.toBeNull();
+    expect((overlay as any).pendingConfirm.kind).toBe("resetScope");
+  });
+
+  it("a is a no-op when no skills are bulkable (no modal opens)", () => {
+    const onlyLocked: RowData[] = [{
+      name: "locked",
+      description: "natively disabled",
+      filePath: "/x.md",
+      disableModelInvocation: true,
+      state: "enabled",
+      source: "global",
+      globalEnabled: true,
+    }];
+    const overlay = makeOverlay(onlyLocked);
+    let fired = false;
+    overlay.onEnableAll = () => { fired = true; };
+    overlay.handleInput("a");
+    expect(fired).toBe(false);
+    expect((overlay as any).pendingConfirm).toBeNull();
+  });
+
+  it("r is a no-op when no toggles in current scope (no modal opens)", () => {
+    // No rows have source === "global" → nothing to reset
+    const noneToggled: RowData[] = [{
+      name: "a", description: "", filePath: "/a.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false,
+    }];
+    const overlay = makeOverlay(noneToggled);
+    let fired = false;
+    overlay.onResetScope = () => { fired = true; };
+    overlay.handleInput("r");
+    expect(fired).toBe(false);
+    expect((overlay as any).pendingConfirm).toBeNull();
+  });
+
+  // ── confirming the modal ──
+
+  it("Enter on enableAll modal fires onEnableAll with sorted names", () => {
+    const overlay = makeOverlay(makeRows());
+    let received: string[] | null = null;
+    overlay.onEnableAll = (names) => { received = names; };
+    overlay.handleInput("a");
+    overlay.handleInput("KEY_ENTER");
+    expect(received).not.toBeNull();
+    expect(received).toEqual(["alpha-skill", "alpha-tool", "beta-skill"]);
+    expect((overlay as any).pendingConfirm).toBeNull();
+  });
+
+  it("y on enableAll modal fires onEnableAll", () => {
+    const overlay = makeOverlay(makeRows());
+    let fired = false;
+    overlay.onEnableAll = () => { fired = true; };
+    overlay.handleInput("a");
+    overlay.handleInput("y");
+    expect(fired).toBe(true);
+    expect((overlay as any).pendingConfirm).toBeNull();
+  });
+
+  it("Enter on disableAll modal fires onDisableAll", () => {
+    const overlay = makeOverlay(makeRows());
+    let received: string[] | null = null;
+    overlay.onDisableAll = (names) => { received = names; };
+    overlay.handleInput("A");
+    overlay.handleInput("KEY_ENTER");
+    expect(received).toEqual(["alpha-skill", "alpha-tool", "beta-skill"]);
+  });
+
+  it("Enter on reset modal fires onResetScope", () => {
+    const overlay = makeOverlay(makeRows());
+    let fired = false;
+    overlay.onResetScope = () => { fired = true; };
+    overlay.handleInput("r");
+    overlay.handleInput("KEY_ENTER");
+    expect(fired).toBe(true);
+    expect((overlay as any).pendingConfirm).toBeNull();
+  });
+
+  // ── cancelling the modal ──
+
+  it("Esc on enableAll modal cancels (no callback)", () => {
+    const overlay = makeOverlay(makeRows());
+    let fired = false;
+    overlay.onEnableAll = () => { fired = true; };
+    let closed = false;
+    overlay.onClose = () => { closed = true; };
+    overlay.handleInput("a");
+    overlay.handleInput("KEY_ESCAPE");
+    expect(fired).toBe(false);
+    expect(closed).toBe(false); // overlay does NOT close
+    expect((overlay as any).pendingConfirm).toBeNull();
+  });
+
+  it("n on disableAll modal cancels", () => {
+    const overlay = makeOverlay(makeRows());
+    let fired = false;
+    overlay.onDisableAll = () => { fired = true; };
+    overlay.handleInput("A");
+    overlay.handleInput("n");
+    expect(fired).toBe(false);
+    expect((overlay as any).pendingConfirm).toBeNull();
+  });
+
+  it("Esc on reset modal cancels without closing overlay", () => {
+    const overlay = makeOverlay(makeRows());
+    let fired = false;
+    overlay.onResetScope = () => { fired = true; };
+    let closed = false;
+    overlay.onClose = () => { closed = true; };
+    overlay.handleInput("r");
+    overlay.handleInput("KEY_ESCAPE");
+    expect(fired).toBe(false);
+    expect(closed).toBe(false);
+  });
+
+  // ── other keys are ignored when modal is open ──
+
+  it("non-confirm keys are ignored when modal is open (no r arming loop)", () => {
+    const overlay = makeOverlay(makeRows());
+    let fired = false;
+    overlay.onResetScope = () => { fired = true; };
+    overlay.handleInput("r"); // open modal
+    overlay.handleInput("r"); // would be a confirm in old behavior, should be ignored now
+    overlay.handleInput("j"); // also ignored
+    overlay.handleInput("KEY_DOWN"); // ignored
+    expect(fired).toBe(false);
+    expect((overlay as any).pendingConfirm).not.toBeNull();
+  });
+
+  it("a in search mode appends to query (does NOT open modal)", () => {
+    const overlay = makeOverlay(makeRows());
+    let fired = false;
+    overlay.onEnableAll = () => { fired = true; };
+    overlay.handleInput("/");
+    overlay.handleInput("a");
+    expect(fired).toBe(false);
+    expect((overlay as any).pendingConfirm).toBeNull();
+    expect((overlay as any).searchQuery).toBe("a");
+  });
+
+  // ── filter-aware bulk ──
+
+  it("a after committing a search filter (Enter) opens modal for filtered skills", () => {
+    const rows: RowData[] = [
+      { name: "auth-login", description: "", filePath: "/a.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false },
+      { name: "auth-logout", description: "", filePath: "/b.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false },
+      { name: "build-app", description: "", filePath: "/c.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false },
+    ];
+    const overlay = makeOverlay(rows);
+    let received: string[] | null = null;
+    overlay.onEnableAll = (names) => { received = names; };
+    overlay.handleInput("/");
+    for (const ch of "auth") overlay.handleInput(ch);
+    overlay.handleInput("KEY_ENTER"); // commit query
+    overlay.handleInput("a"); // open modal
+    overlay.handleInput("KEY_ENTER"); // confirm
+    expect(received).toEqual(["auth-login", "auth-logout"]);
+  });
+
+  // ── modal rendering ──
+
+  it("modal renders with warning border for enableAll", () => {
+    const overlay = makeOverlay(makeRows());
+    overlay.handleInput("a");
+    const lines = overlay.render(80);
+    const text = lines.join("\n");
+    // Warning border uses warning theme color (wraps content in ANSI codes)
+    // We assert that the modal box is drawn with box-drawing characters.
+    expect(text).toMatch(/┌/);
+    expect(text).toMatch(/Confirm Enable All/);
+    expect(text).toMatch(/Enable 3 non-native-disabled skills/);
+    expect(text).toMatch(/Scope: global/);
+  });
+
+  it("modal renders with warning border for disableAll", () => {
+    const overlay = makeOverlay(makeRows());
+    overlay.handleInput("A");
+    const lines = overlay.render(80);
+    const text = lines.join("\n");
+    expect(text).toMatch(/Confirm Disable All/);
+    expect(text).toMatch(/Disable 3 non-native-disabled skills/);
+  });
+
+  it("modal renders with error border for resetScope", () => {
+    const overlay = makeOverlay(makeRows());
+    overlay.handleInput("r");
+    const lines = overlay.render(80);
+    const text = lines.join("\n");
+    expect(text).toMatch(/Confirm Reset/);
+    expect(text).toMatch(/Reset all toggles in global scope/);
+    // makeRows has 2 rows with source === "global" (alpha-skill, gamma-tool)
+    expect(text).toMatch(/clears 2 toggle/);
+  });
+
+  it("modal body shows scope name", () => {
+    const overlay = new SkillDetailOverlay(
+      makeRows(), 0, () => 40, T, "project", "my-app", true
+    );
+    overlay.handleInput("r");
+    const lines = overlay.render(80);
+    const text = lines.join("\n");
+    expect(text).toMatch(/Reset all toggles in project scope/);
+    expect(text).toMatch(/Scope: project/);
+  });
+
+  it("modal is centered horizontally in the rendered output", () => {
+    const overlay = makeOverlay(makeRows());
+    overlay.handleInput("a");
+    const lines = overlay.render(120);
+    // The title row (with "Confirm Enable All") should have leading whitespace.
+    const titleLine = lines.find((l) => l.includes("Confirm Enable All"));
+    expect(titleLine).toBeDefined();
+    const leadingSpaces = titleLine!.search(/\S/); // index of first non-space
+    expect(leadingSpaces).toBeGreaterThan(0);
+  });
+
+  it("regular overlay is drawn when no modal is open", () => {
+    const overlay = makeOverlay(makeRows());
+    const lines = overlay.render(80);
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    // No modal
+    expect(text).not.toMatch(/Confirm Enable/);
+    expect(text).not.toMatch(/Confirm Reset/);
+  });
+});

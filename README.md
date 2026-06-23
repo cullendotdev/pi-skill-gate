@@ -17,11 +17,12 @@ Control which skills are injected into the initial system prompt with `/skill-ga
 - **Complete skill coverage** — uses pi's `ResourceLoader` API with dynamic directory discovery to match `/skill:` autocomplete (including extension-contributed, project-memory, and migrated package skills)
 - **Skill browser** — view the complete `SKILL.md` content (description, when-to-use, procedure, prompt body) for every skill with syntax-highlighted markdown rendering
 - **Toggle visibility** — enable or disable skills individually; disabled skills are excluded from the system prompt
+- **Bulk actions with confirm modals** — enable/disable all visible skills at once (`a`/`A`, warning-bordered modal) or reset the current scope to defaults (`r`, error-bordered modal). Bulk respects the active search filter
 - **Persistent state** — toggle state saved to `~/.pi/agent/config/skill-gate.json`
 - **System prompt injection** — enabled skills are automatically inserted as `<available_skills>` before each agent start via the `before_agent_start` hook
 - **Respects native-disabled** — skills with `disableModelInvocation: true` are marked with a disabled indicator and cannot be toggled
 - **Per-project configs** — project-level overrides stored under a `projects` key in the same config file, keyed by absolute path. Toggle scope between global and project with `g`
-- **Fast hook** — `before_agent_start` filters from an in-memory cache — zero filesystem access per message
+- **Fast hook** — `before_agent_start` filters from in-memory caches (skills + config) — zero filesystem access per agent turn
 
 ## Installation
 
@@ -54,13 +55,25 @@ Opens an overlay showing all discovered skills.
 |---|---|
 | `↑` `↓` | Navigate skills |
 | `Space` | Toggle selected skill enabled/disabled |
-| `/` | Enter search mode — type to jump to matching skills |
+| `/` | Enter search mode — type to jump to matching skills (Enter commits query, filter persists) |
 | `b` | Toggle skill-list sidebar |
 | `k` `j` | Scroll prompt content |
 | `Home` `End` | Jump to top/bottom |
-| `Enter` | Invoke skill into chat (confirm selection in search mode) |
+| `Enter` | Invoke skill into chat (confirm selection in search mode and confirm modals) |
 | `g` | Toggle editing scope (global ↔ project) — only in a project directory |
-| `Esc` | Close (cancel search when searching) |
+| `a` | Open "Enable all" confirm modal (warning border) — respects active filter |
+| `A` | Open "Disable all" confirm modal (warning border) — respects active filter |
+| `r` | Open "Reset scope" confirm modal (error border) |
+| `Esc` | Close (cancel search when searching; cancel confirm modal when open) |
+
+### Confirm modals
+
+`a`, `A`, and `r` open a centered confirmation modal before applying the change:
+
+- **`a` / `A` — Warning border (yellow):** show the count of skills that will be affected plus the active scope. Use `Enter` or `y` to confirm, `Esc` or `n` to cancel.
+- **`r` — Error border (red):** shows the scope that will be cleared and how many toggles will be removed. Use `Enter` or `y` to confirm, `Esc` or `n` to cancel.
+
+When the modal is open, all other keys (including `r`, arrows, `j`/`k`) are ignored so you can't accidentally double-confirm.
 
 ## Configuration
 

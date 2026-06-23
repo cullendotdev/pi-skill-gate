@@ -20,20 +20,42 @@ import { SkillDetailOverlay } from "./overlay.js";
 
 const CONFIG_PATH = path.join(homedir(), ".pi", "agent", "config", "skill-gate.json");
 
-export function loadConfig(): SkillGateConfig {
-  if (!fs.existsSync(CONFIG_PATH)) return { skills: {}, projects: {} };
-  try {
-    const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
-    return { skills: raw.skills || {}, projects: raw.projects || {} };
-  }
-  catch {
-    console.warn(`[skill-gate] Failed to parse ${CONFIG_PATH} — using empty config`);
-    return { skills: {}, projects: {} };
-  }
+/**
+ * In-memory cache of the parsed config. `before_agent_start` runs on every
+ * agent turn, but the config is only ever mutated via `persistToggle` (which
+ * updates this cache) — so a cached read is always up-to-date within a
+ * session. Use `invalidateConfigCache()` for external edits to the file.
+ */
+let cachedConfig: SkillGateConfig | null = null;
+
+/** Drop the in-memory config cache. Call after external edits to the file. */
+export function invalidateConfigCache(): void {
+  cachedConfig = null;
 }
+
+export function loadConfig(): SkillGateConfig {
+  if (cachedConfig) return cachedConfig;
+  let parsed: SkillGateConfig;
+  if (!fs.existsSync(CONFIG_PATH)) {
+    parsed = { skills: {}, projects: {} };
+  } else {
+    try {
+      const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
+      parsed = { skills: raw.skills || {}, projects: raw.projects || {} };
+    } catch {
+      console.warn(`[skill-gate] Failed to parse ${CONFIG_PATH} — using empty config`);
+      parsed = { skills: {}, projects: {} };
+    }
+  }
+  cachedConfig = parsed;
+  return cachedConfig;
+}
+
 export function saveConfig(c: SkillGateConfig): void {
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2), "utf-8");
+  // Keep the cache in sync with what we just persisted.
+  cachedConfig = c;
 }
 
 /** Resolve effective state: project override → global → default "disabled". */
@@ -71,6 +93,77 @@ export function persistToggle(name: string, value: ToggleState, config: SkillGat
     if (Object.keys(proj.skills).length === 0) delete config.projects[projectPath];
   }
   saveConfig(config);
+}
+
+/** Bulk version of `persistToggle`. Applies the same value to many skills in a
+ *  single write. Mirrors `persistToggle`'s cleanup: project overrides that
+ *  match the global effective state are pruned, and empty project sections
+ *  are removed. Returns the number of skills whose state actually changed
+ *  (zero changes = zero writes). */
+export function persistBulkToggle(
+  names: string[],
+  value: ToggleState,
+  config: SkillGateConfig,
+  scope: EditScope,
+  projectPath?: string,
+): number {
+  let applied = 0;
+  if (scope === "global") {
+    for (const name of names) {
+      if (value === "disabled") {
+        if (config.skills[name] !== undefined) {
+          delete config.skills[name];
+          applied++;
+        }
+      } else if (config.skills[name] !== value) {
+        config.skills[name] = value;
+        applied++;
+      }
+    }
+  } else if (scope === "project" && projectPath) {
+    if (!config.projects) config.projects = {};
+    if (!config.projects[projectPath]) config.projects[projectPath] = { skills: {} };
+    const proj = config.projects[projectPath];
+    for (const name of names) {
+      const globalEff = config.skills[name] === "enabled" ? "enabled" : "disabled";
+      if (value === globalEff) {
+        if (proj.skills[name] !== undefined) {
+          delete proj.skills[name];
+          applied++;
+        }
+      } else if (proj.skills[name] !== value) {
+        proj.skills[name] = value;
+        applied++;
+      }
+    }
+    if (Object.keys(proj.skills).length === 0) delete config.projects[projectPath];
+  }
+  if (applied > 0) saveConfig(config);
+  return applied;
+}
+
+/** Reset all toggles in the given scope. Global clears `config.skills`; project
+ *  removes the project entry (leaves the projects map as an empty object,
+ *  matching the convention used by `persistToggle`). Returns the number of
+ *  toggles cleared (zero = no save). Does NOT cascade across scopes. */
+export function resetScope(
+  config: SkillGateConfig,
+  scope: EditScope,
+  projectPath?: string,
+): number {
+  let cleared = 0;
+  if (scope === "global") {
+    cleared = Object.keys(config.skills).length;
+    if (cleared > 0) config.skills = {};
+  } else if (scope === "project" && projectPath) {
+    const proj = config.projects?.[projectPath];
+    if (proj) {
+      cleared = Object.keys(proj.skills).length;
+      if (cleared > 0) delete config.projects[projectPath];
+    }
+  }
+  if (cleared > 0) saveConfig(config);
+  return cleared;
 }
 
 // ── Cached skills from ResourceLoader (populated at session_start) ──
@@ -206,6 +299,19 @@ export default function (pi: ExtensionAPI) {
         const outcome = await new Promise<{ type: "close" } | { type: "invoke"; name: string }>((resolve) => {
           let overlay: SkillDetailOverlay;
 
+          /** Refresh effective state for one skill after a mutation. */
+          const refreshSkill = (name: string) => {
+            const { state, source } = loadEffectiveState(name, config, projectPath);
+            stateMap.set(name, state);
+            sourceMap.set(name, source);
+            const row = rows.find((r) => r.name === name);
+            if (row) {
+              row.state = state;
+              row.source = source;
+              row.globalEnabled = config.skills[name] === "enabled";
+            }
+          };
+
           ctx.ui.custom((tui, piTheme, _kb, done) => {
             const T = makeTheme(piTheme);
             const initIdx = lastSkill ? rows.findIndex((r) => r.name === lastSkill) : 0;
@@ -214,18 +320,44 @@ export default function (pi: ExtensionAPI) {
             overlay.onInvoke = (name) => { done(null); resolve({ type: "invoke", name }); };
             overlay.onToggle = (name, state) => {
               persistToggle(name, state, config, editingScope, projectPath);
-              // Recompute effective state for the toggled skill
-              const { state: newState, source: newSource } = loadEffectiveState(name, config, projectPath);
-              stateMap.set(name, newState);
-              sourceMap.set(name, newSource);
-              // Update the row in-place for immediate re-render
-              const row = rows.find(r => r.name === name);
-              if (row) { row.state = newState; row.source = newSource; row.globalEnabled = config.skills[name] === "enabled"; }
+              refreshSkill(name);
               tui.requestRender();
             };
             overlay.onScopeToggle = () => {
               editingScope = editingScope === "global" ? "project" : "global";
               overlay.setEditingScope(editingScope);
+              tui.requestRender();
+            };
+            overlay.onEnableAll = (names) => {
+              const count = persistBulkToggle(names, "enabled", config, editingScope, projectPath);
+              if (count > 0) {
+                for (const n of names) refreshSkill(n);
+                ctx.ui.notify(`Enabled ${count} skills in ${editingScope}`, "info");
+              } else {
+                ctx.ui.notify("Nothing to enable", "info");
+              }
+              tui.requestRender();
+            };
+            overlay.onDisableAll = (names) => {
+              const count = persistBulkToggle(names, "disabled", config, editingScope, projectPath);
+              if (count > 0) {
+                for (const n of names) refreshSkill(n);
+                ctx.ui.notify(`Disabled ${count} skills in ${editingScope}`, "info");
+              } else {
+                ctx.ui.notify("Nothing to disable", "info");
+              }
+              tui.requestRender();
+            };
+            overlay.onResetScope = () => {
+              const count = resetScope(config, editingScope, projectPath);
+              // Refresh every skill — global reset clears all sources, project
+              // reset removes overrides and may cascade defaults back in.
+              for (const s of skills) refreshSkill(s.name);
+              if (count > 0) {
+                ctx.ui.notify(`Reset ${count} toggles in ${editingScope}`, "info");
+              } else {
+                ctx.ui.notify("Nothing to reset", "info");
+              }
               tui.requestRender();
             };
             return {

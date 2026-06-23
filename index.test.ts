@@ -23,7 +23,10 @@ import {
   saveConfig,
   loadEffectiveState,
   persistToggle,
+  persistBulkToggle,
+  resetScope,
   buildVisibleBlock,
+  invalidateConfigCache,
 } from "./index.js";
 import type { SkillGateConfig, SkillVisibility } from "./types.js";
 
@@ -37,6 +40,9 @@ function emptyConfig(): SkillGateConfig {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Reset the module-level config cache between tests so each test gets a
+  // clean slate (otherwise a warm cache from a prior test would skip disk I/O).
+  invalidateConfigCache();
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -283,6 +289,161 @@ describe("persistToggle", () => {
 });
 
 // ═══════════════════════════════════════════════════════════
+//  persistBulkToggle
+// ═══════════════════════════════════════════════════════════
+
+describe("persistBulkToggle", () => {
+  it("enables multiple skills globally in a single write", () => {
+    const cfg = emptyConfig();
+    const n = persistBulkToggle(["a", "b", "c"], "enabled", cfg, "global");
+    expect(n).toBe(3);
+    expect(cfg.skills).toEqual({ a: "enabled", b: "enabled", c: "enabled" });
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables multiple skills globally (deletes keys, single write)", () => {
+    const cfg: SkillGateConfig = {
+      skills: { a: "enabled", b: "enabled", c: "enabled", d: "enabled" },
+      projects: {},
+    };
+    const n = persistBulkToggle(["a", "b"], "disabled", cfg, "global");
+    expect(n).toBe(2);
+    expect(cfg.skills).toEqual({ c: "enabled", d: "enabled" });
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("setting same value twice is a no-op (no save)", () => {
+    const cfg: SkillGateConfig = {
+      skills: { a: "enabled" },
+      projects: {},
+    };
+    const n = persistBulkToggle(["a"], "enabled", cfg, "global");
+    expect(n).toBe(0);
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(0);
+  });
+
+  it("mixed: applies only where state changes (still single write)", () => {
+    const cfg: SkillGateConfig = {
+      skills: { a: "enabled", b: "enabled", c: "disabled" },
+      projects: {},
+    };
+    // a is already enabled (no-op); c is disabled (no-op); b → c becomes enabled
+    // Wait, persistBulkToggle sets all listed to the same value, so:
+    // a: already enabled, no-op
+    // b: already enabled, no-op
+    // c: currently disabled, becomes enabled → applied
+    const n = persistBulkToggle(["a", "b", "c"], "enabled", cfg, "global");
+    expect(n).toBe(1);
+    expect(cfg.skills).toEqual({ a: "enabled", b: "enabled", c: "enabled" });
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("project scope: sets multiple overrides in a single write", () => {
+    const cfg = emptyConfig();
+    const n = persistBulkToggle(["a", "b"], "enabled", cfg, "project", "/proj");
+    expect(n).toBe(2);
+    expect(cfg.projects!["/proj"]!.skills).toEqual({ a: "enabled", b: "enabled" });
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("project scope: prunes overrides that match global", () => {
+    const cfg: SkillGateConfig = {
+      skills: { a: "enabled" },
+      projects: { "/proj": { skills: { a: "disabled" } } },
+    };
+    const n = persistBulkToggle(["a"], "enabled", cfg, "project", "/proj");
+    expect(n).toBe(1); // a was disabled at project → enabled at project (matches global, pruned)
+    expect(cfg.projects!["/proj"]?.skills["a"]).toBeUndefined();
+  });
+
+  it("project scope: prunes the entire project entry when emptied", () => {
+    const cfg: SkillGateConfig = {
+      skills: {},
+      projects: { "/proj": { skills: { a: "enabled" } } },
+    };
+    persistBulkToggle(["a"], "disabled", cfg, "project", "/proj");
+    // Global is "disabled" (default); project override matching → pruned
+    expect(cfg.projects!["/proj"]).toBeUndefined();
+  });
+
+  it("project scope: skips entirely when projectPath missing", () => {
+    const cfg = emptyConfig();
+    const n = persistBulkToggle(["a", "b"], "enabled", cfg, "project");
+    expect(n).toBe(0);
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(0);
+    expect(cfg.projects).toEqual({});
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+//  resetScope
+// ═══════════════════════════════════════════════════════════
+
+describe("resetScope", () => {
+  it("global: clears all global skill toggles", () => {
+    const cfg: SkillGateConfig = {
+      skills: { a: "enabled", b: "disabled", c: "enabled" },
+      projects: { "/proj": { skills: { d: "enabled" } } },
+    };
+    const n = resetScope(cfg, "global");
+    expect(n).toBe(3);
+    expect(cfg.skills).toEqual({});
+    // Projects untouched
+    expect(cfg.projects!["/proj"]!.skills["d"]).toBe("enabled");
+  });
+
+  it("project: removes the project entry entirely", () => {
+    const cfg: SkillGateConfig = {
+      skills: { a: "enabled" },
+      projects: { "/proj": { skills: { b: "disabled", c: "enabled" } } },
+    };
+    const n = resetScope(cfg, "project", "/proj");
+    expect(n).toBe(2);
+    expect(cfg.projects!["/proj"]).toBeUndefined();
+    expect(cfg.skills["a"]).toBe("enabled");
+  });
+
+  it("project: only removes the named project, leaves others", () => {
+    const cfg: SkillGateConfig = {
+      skills: {},
+      projects: {
+        "/proj-a": { skills: { x: "enabled" } },
+        "/proj-b": { skills: { y: "enabled" } },
+      },
+    };
+    resetScope(cfg, "project", "/proj-a");
+    expect(cfg.projects!["/proj-a"]).toBeUndefined();
+    expect(cfg.projects!["/proj-b"]!.skills["y"]).toBe("enabled");
+  });
+
+  it("returns 0 (no save) when scope is already empty", () => {
+    const cfg: SkillGateConfig = { skills: {}, projects: {} };
+    const n = resetScope(cfg, "global");
+    expect(n).toBe(0);
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(0);
+  });
+
+  it("returns 0 (no save) when project doesn't exist", () => {
+    const cfg: SkillGateConfig = {
+      skills: { a: "enabled" },
+      projects: {},
+    };
+    const n = resetScope(cfg, "project", "/missing");
+    expect(n).toBe(0);
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(0);
+  });
+
+  it("writes exactly once per non-empty scope", () => {
+    const cfg: SkillGateConfig = {
+      skills: { a: "enabled", b: "disabled" },
+      projects: {},
+    };
+    resetScope(cfg, "global");
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
 //  buildVisibleBlock
 // ═══════════════════════════════════════════════════════════
 
@@ -392,5 +553,125 @@ describe("buildVisibleBlock", () => {
     expect(block).toBe(
       "<available_skills>\n- minimal: \n</available_skills>"
     );
+  });
+});
+
+// ═════════════════════════════════════════════════════════
+//  Config cache (avoid file read on every before_agent_start)
+// ═════════════════════════════════════════════════════════
+
+describe("config cache", () => {
+  it("loadConfig reads disk on first call", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ skills: { alpha: "enabled" } }) as any
+    );
+    const cfg = loadConfig();
+    expect(cfg.skills["alpha"]).toBe("enabled");
+    expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("loadConfig does not read disk on subsequent calls (cache hit)", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ skills: { alpha: "enabled" } }) as any
+    );
+    loadConfig();
+    loadConfig();
+    loadConfig();
+    expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("loadConfig returns the same reference on cache hit", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ skills: { alpha: "enabled" } }) as any
+    );
+    const cfg1 = loadConfig();
+    const cfg2 = loadConfig();
+    expect(cfg1).toBe(cfg2);
+  });
+
+  it("loadConfig reads disk again after invalidateConfigCache()", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ skills: { alpha: "enabled" } }) as any
+    );
+    loadConfig();
+    invalidateConfigCache();
+    loadConfig();
+    expect(fs.readFileSync).toHaveBeenCalledTimes(2);
+  });
+
+  it("loadConfig caches the empty fallback (no file → no disk reads after)", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    loadConfig();
+    loadConfig();
+    loadConfig();
+    expect(fs.readFileSync).toHaveBeenCalledTimes(0);
+    expect(fs.existsSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("loadConfig caches the corrupt-JSON fallback (parse once, then cache)", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue("{invalid json!!!}" as any);
+    loadConfig();
+    loadConfig();
+    expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
+  it("persistToggle updates the cache so loadConfig returns updated value without disk read", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ skills: {} }) as any);
+    const cfg = loadConfig();
+    expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+
+    persistToggle("newSkill", "enabled", cfg, "global");
+
+    // Reset read counter to confirm next loadConfig is a cache hit.
+    vi.mocked(fs.readFileSync).mockClear();
+
+    const cfg2 = loadConfig();
+    expect(cfg2.skills["newSkill"]).toBe("enabled");
+    expect(fs.readFileSync).toHaveBeenCalledTimes(0);
+  });
+
+  it("persistToggle keeps the same config reference across loads", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ skills: {} }) as any);
+    const cfg = loadConfig();
+    persistToggle("x", "enabled", cfg, "global");
+
+    const reloaded = loadConfig();
+    expect(reloaded).toBe(cfg);
+  });
+
+  it("saveConfig writes to disk and updates cache to point at the saved config", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    const cfg = loadConfig(); // empty fallback, cached
+    cfg.skills["manual"] = "enabled"; // direct mutation
+
+    saveConfig(cfg);
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+
+    const cfg2 = loadConfig();
+    expect(cfg2.skills["manual"]).toBe("enabled");
+    expect(cfg2).toBe(cfg);
+  });
+
+  it("before_agent_start pattern: many loads between a single persistToggle make zero disk reads", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ skills: {} }) as any);
+    const cfg = loadConfig(); // first read
+    expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+
+    persistToggle("hotSkill", "enabled", cfg, "global");
+    vi.mocked(fs.readFileSync).mockClear();
+
+    // Simulate 1000 agent starts between toggles.
+    for (let i = 0; i < 1000; i++) loadConfig();
+    expect(fs.readFileSync).toHaveBeenCalledTimes(0);
   });
 });

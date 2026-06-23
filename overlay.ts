@@ -86,6 +86,12 @@ export function readSkillBody(filePath: string): string {
 
 // ── Overlay ──
 
+/** State of the confirm modal shown for bulk actions. */
+type PendingConfirm =
+  | { kind: "enableAll"; names: string[]; count: number; scope: EditScope }
+  | { kind: "disableAll"; names: string[]; count: number; scope: EditScope }
+  | { kind: "resetScope"; count: number; scope: EditScope };
+
 export class SkillDetailOverlay {
   private rows: RowData[];
   private currentIdx: number;
@@ -99,11 +105,15 @@ export class SkillDetailOverlay {
   private editingScope: EditScope;
   private projectName?: string;
   private hasProject: boolean;
+  private pendingConfirm: PendingConfirm | null = null;
 
   onClose?: () => void;
   onToggle?: (name: string, state: ToggleState) => void;
   onInvoke?: (name: string) => void;
   onScopeToggle?: () => void;
+  onEnableAll?: (names: string[]) => void;
+  onDisableAll?: (names: string[]) => void;
+  onResetScope?: () => void;
 
   constructor(rows: RowData[], initialIdx: number, getTerminalRows: () => number, theme: SkillGateTheme, editingScope: EditScope, projectName?: string, hasProject = false) {
     this.rows = rows;
@@ -123,8 +133,30 @@ export class SkillDetailOverlay {
   handleInput(data: string): void {
     if (this.rows.length === 0) return;
 
+    // ── pending reset: r confirms, Esc cancels (does NOT close overlay) ──
+    if (this.pendingConfirm) {
+      // Modal open: only Enter/y confirms, Esc/n cancels. All other keys
+      // (including r, arrows, j/k) are ignored — no accidental confirmations.
+      if (matchesKey(data, Key.enter) || data === "y" || data === "Y") {
+        const pc = this.pendingConfirm;
+        this.pendingConfirm = null;
+        if (pc.kind === "enableAll") this.onEnableAll?.(pc.names);
+        else if (pc.kind === "disableAll") this.onDisableAll?.(pc.names);
+        else if (pc.kind === "resetScope") this.onResetScope?.();
+        return;
+      }
+      if (matchesKey(data, Key.escape) || data === "n" || data === "N") {
+        this.pendingConfirm = null;
+        return;
+      }
+      return; // ignore everything else while modal is open
+    }
+
     // ── search mode ──
     if (this.searchMode) {
+      // Bulk keys are NOT intercepted in search mode — printable chars append
+      // to the query. To bulk-apply to a filtered set: type query → Enter
+      // (commits query, filter persists) → press a/A/r.
       if (matchesKey(data, Key.escape)) {
         this.searchMode = false;
         this.searchQuery = "";
@@ -178,6 +210,29 @@ export class SkillDetailOverlay {
     if (data === "/" || matchesKey(data, Key.slash)) {
       this.searchMode = true;
       this.searchQuery = "";
+      return;
+    }
+
+    // ── bulk actions: open a confirm modal (excluded while a modal is open) ──
+    if (data === "a") {
+      const names = this.getBulkableNames();
+      if (names.length > 0) {
+        this.pendingConfirm = { kind: "enableAll", names, count: names.length, scope: this.editingScope };
+      }
+      return;
+    }
+    if (data === "A") {
+      const names = this.getBulkableNames();
+      if (names.length > 0) {
+        this.pendingConfirm = { kind: "disableAll", names, count: names.length, scope: this.editingScope };
+      }
+      return;
+    }
+    if (data === "r") {
+      const count = this.countScopeToggles();
+      if (count > 0) {
+        this.pendingConfirm = { kind: "resetScope", count, scope: this.editingScope };
+      }
       return;
     }
 
@@ -238,10 +293,13 @@ export class SkillDetailOverlay {
     }
   }
 
-  /** Compute filtered skill indices ordered by match quality (prefix first, then substring). */
+  /** Compute filtered skill indices ordered by match quality (prefix first, then substring).
+ *  The filter is active whenever `searchQuery` is non-empty, regardless of
+ *  whether `searchMode` is on — this lets the sidebar keep filtering after
+ *  the user commits a search with Enter. */
   private getFilteredIndices(): number[] {
     const q = this.searchQuery.toLowerCase();
-    if (!q || !this.searchMode) return this.rows.map((_, i) => i);
+    if (!q) return this.rows.map((_, i) => i);
     const prefix: number[] = [];
     const substr: number[] = [];
     for (let i = 0; i < this.rows.length; i++) {
@@ -267,6 +325,27 @@ export class SkillDetailOverlay {
     this.scrollOffset = 0;
   }
 
+  /** Names of skills the bulk actions should target: visible (filter-aware)
+   *  AND not natively-disabled. Returns sorted names. */
+  private getBulkableNames(): string[] {
+    const filtered = this.getFilteredIndices();
+    return filtered
+      .map((i) => this.rows[i])
+      .filter((r) => !r.disableModelInvocation)
+      .map((r) => r.name)
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  /** Count of toggles in the current scope: rows whose `source` matches.
+   *  Global scope counts rows with a global toggle (source === "global");
+   *  project scope counts rows with a project override (source === "project"). */
+  private countScopeToggles(): number {
+    if (this.editingScope === "global") {
+      return this.rows.filter((r) => r.source === "global").length;
+    }
+    return this.rows.filter((r) => r.source === "project").length;
+  }
+
   // ── sidebar width (based on longest skill name + ▶ indicator) ──
   // Capped at 30% of terminal width so detail column always has room.
   private sidebarWidth(terminalWidth: number): number {
@@ -290,7 +369,7 @@ export class SkillDetailOverlay {
     const lines: string[] = [];
     const skillArea = Math.max(0, height - 2); // header + separator
 
-    const filtered = this.searchMode ? this.getFilteredIndices() : this.rows.map((_, i) => i);
+    const filtered = this.getFilteredIndices();
     const total = filtered.length;
 
     // Auto-scroll to keep selected skill visible
@@ -532,7 +611,78 @@ export class SkillDetailOverlay {
     // ── bottom border ──
     lines.push(T.dim("└" + "─".repeat(innerW) + "┘"));
 
+    // ── confirm modal overlay (replaces rows in the center of the overlay) ──
+    if (this.pendingConfirm) {
+      const modal = this.renderModal(width);
+      const startRow = Math.max(0, Math.floor((lines.length - modal.height) / 2));
+      const colOffset = Math.max(0, Math.floor((width - modal.width) / 2));
+      const padLeft = " ".repeat(colOffset);
+      const padRight = " ".repeat(Math.max(0, width - colOffset - modal.width));
+      for (let i = 0; i < modal.lines.length; i++) {
+        const r = startRow + i;
+        if (r >= 0 && r < lines.length) {
+          lines[r] = padLeft + modal.lines[i] + padRight;
+        }
+      }
+    }
+
     return lines;
+  }
+
+  /** Build the confirm modal box. Returns lines + dimensions for the
+   *  caller to position over the background. Border color is warning for
+   *  enable/disable actions and error for reset (destructive). */
+  private renderModal(width: number): { lines: string[]; width: number; height: number } {
+    const T = this.theme;
+    const pc = this.pendingConfirm!;
+    const border = pc.kind === "resetScope" ? T.error : T.warning;
+
+    // Title
+    const title =
+      pc.kind === "enableAll" ? "Confirm Enable All" :
+      pc.kind === "disableAll" ? "Confirm Disable All" :
+      "Confirm Reset";
+
+    // Body lines (plain text; styled at render time)
+    const bodyLines: string[] = [];
+    if (pc.kind === "enableAll" || pc.kind === "disableAll") {
+      const verb = pc.kind === "enableAll" ? "Enable" : "Disable";
+      bodyLines.push(`${verb} ${pc.count} non-native-disabled skills?`);
+    } else {
+      bodyLines.push(`Reset all toggles in ${pc.scope} scope?`);
+      if (pc.count > 0) {
+        bodyLines.push(`This clears ${pc.count} toggle${pc.count === 1 ? "" : "s"}.`);
+      }
+    }
+    bodyLines.push(`Scope: ${pc.scope}`);
+
+    const footerText = "Enter/y confirm · Esc/n cancel";
+
+    // Compute width — auto-fit content with sensible bounds
+    const longest = Math.max(title.length, ...bodyLines.map((l) => l.length), footerText.length);
+    const innerW = longest + 2; // 1 space padding on each side
+    const boxW = innerW + 2; // +2 for left/right borders
+
+    // Helper: build a content row with colored border
+    const row = (content: string) => {
+      const vw = visibleWidth(content);
+      const padded = vw < innerW ? content + " ".repeat(innerW - vw) : truncateToWidth(content, innerW);
+      return border("│") + padded + border("│");
+    };
+
+    const horiz = (left: string, right: string) =>
+      border(left + "─".repeat(boxW - 2) + right);
+
+    const lines: string[] = [];
+    lines.push(horiz("┌", "┐"));
+    lines.push(row(" " + T.accent(T.bold(title))));
+    lines.push(row(""));
+    for (const bl of bodyLines) lines.push(row(" " + bl));
+    lines.push(row(""));
+    lines.push(row(" " + T.dim(footerText)));
+    lines.push(horiz("└", "┘"));
+
+    return { lines, width: boxW, height: lines.length };
   }
 
   /** Render title bar + subtitle/search/scope header. Returns header line count. */
@@ -631,20 +781,23 @@ export class SkillDetailOverlay {
 
   /** Wrap the footer text to fit maxW and return styled lines. */
   private footerLines(meta: { bodyLength: number; remaining: number; maxOffset: number }, maxW: number): string[] {
-    // Build the raw left-side text (scroll info + keybindings).
+    // Build the raw left-side text (scroll info + keybindings). When a
+    // confirm modal is open, the modal itself shows the relevant key hints,
+    // so the footer just shows neutral scroll/nav info.
     const hasMore = meta.bodyLength > meta.remaining;
     const scopeKey = this.hasProject ? " · g scope" : "";
+    const bulkKeys = " · a enable all · A disable all · r reset";
     let left: string;
     if (this.searchMode) {
-      left = " / search · Esc cancel · Enter confirm";
+      left = " / search · Esc cancel · Enter confirm" + bulkKeys;
     } else if (hasMore) {
       const pct = meta.maxOffset > 0 ? Math.round((this.scrollOffset / meta.maxOffset) * 100) : 0;
       const up = this.scrollOffset > 0 ? "↑" : " ";
       const endLine = Math.min(this.scrollOffset + meta.remaining, meta.bodyLength);
       const dn = endLine < meta.bodyLength ? "↓" : " ";
-      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · / search · b sidebar${scopeKey} · enter invoke · Esc close`;
+      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · / search · b sidebar${scopeKey}${bulkKeys} · enter invoke · Esc close`;
     } else {
-      left = ` ↑↓ skill · / search · b sidebar${scopeKey} · enter invoke · Esc close`;
+      left = ` ↑↓ skill · / search · b sidebar${scopeKey}${bulkKeys} · enter invoke · Esc close`;
     }
     const idx = this.searchMode
       ? (() => {
