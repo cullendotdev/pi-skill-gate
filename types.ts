@@ -9,6 +9,12 @@ export interface SkillGateConfig {
   projects: Record<string, ProjectSkillConfig>;
 }
 
+// ── Analytics ──
+
+export interface SkillAnalytics {
+  counts: Record<string, number>;
+}
+
 // ── UI row data ──
 
 export interface RowData {
@@ -19,6 +25,7 @@ export interface RowData {
   state: ToggleState;
   source: "global" | "project" | "default";
   globalEnabled: boolean;
+  usageCount: number;
 }
 
 // ── System prompt injection ──

@@ -84,6 +84,7 @@ function makeRows(): RowData[] {
       state: "enabled",
       source: "global",
       globalEnabled: true,
+      usageCount: 5,
     },
     {
       name: "beta-skill",
@@ -93,6 +94,7 @@ function makeRows(): RowData[] {
       state: "disabled",
       source: "default",
       globalEnabled: false,
+      usageCount: 0,
     },
     {
       name: "gamma-tool",
@@ -102,6 +104,7 @@ function makeRows(): RowData[] {
       state: "enabled",
       source: "global",
       globalEnabled: true,
+      usageCount: 12,
     },
     {
       name: "alpha-tool",
@@ -111,6 +114,7 @@ function makeRows(): RowData[] {
       state: "enabled",
       source: "project",
       globalEnabled: false,
+      usageCount: 3,
     },
   ];
 }
@@ -385,9 +389,9 @@ describe("SkillDetailOverlay.getFilteredIndices", () => {
 
   it("substring matches come after prefix matches", () => {
     const rows: RowData[] = [
-      { name: "apple", description: "", filePath: "", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true },
-      { name: "pineapple", description: "", filePath: "", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true },
-      { name: "orange", description: "", filePath: "", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true },
+      { name: "apple", description: "", filePath: "", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 0 },
+      { name: "pineapple", description: "", filePath: "", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 0 },
+      { name: "orange", description: "", filePath: "", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 0 },
     ];
     const overlay = makeOverlay(rows);
     (overlay as any).searchQuery = "apple";
@@ -809,6 +813,7 @@ describe("SkillDetailOverlay.handleInput (bulk actions)", () => {
       state: "enabled",
       source: "global",
       globalEnabled: true,
+      usageCount: 0,
     }];
     const overlay = makeOverlay(onlyLocked);
     let fired = false;
@@ -821,7 +826,7 @@ describe("SkillDetailOverlay.handleInput (bulk actions)", () => {
   it("r is a no-op when no toggles in current scope (no modal opens)", () => {
     // No rows have source === "global" → nothing to reset
     const noneToggled: RowData[] = [{
-      name: "a", description: "", filePath: "/a.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false,
+      name: "a", description: "", filePath: "/a.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0,
     }];
     const overlay = makeOverlay(noneToggled);
     let fired = false;
@@ -939,9 +944,9 @@ describe("SkillDetailOverlay.handleInput (bulk actions)", () => {
 
   it("a after committing a search filter (Enter) opens modal for filtered skills", () => {
     const rows: RowData[] = [
-      { name: "auth-login", description: "", filePath: "/a.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false },
-      { name: "auth-logout", description: "", filePath: "/b.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false },
-      { name: "build-app", description: "", filePath: "/c.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false },
+      { name: "auth-login", description: "", filePath: "/a.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
+      { name: "auth-logout", description: "", filePath: "/b.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
+      { name: "build-app", description: "", filePath: "/c.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
     ];
     const overlay = makeOverlay(rows);
     let received: string[] | null = null;
@@ -1018,5 +1023,230 @@ describe("SkillDetailOverlay.handleInput (bulk actions)", () => {
     // No modal
     expect(text).not.toMatch(/Confirm Enable/);
     expect(text).not.toMatch(/Confirm Reset/);
+  });
+});
+
+//  Usage display (column + detail)
+
+describe("SkillDetailOverlay usage display", () => {
+  function makeOverlay(rows: RowData[], idx = 0) {
+    return new SkillDetailOverlay(
+      rows,
+      idx,
+      () => 40,
+      T,
+      "global",
+    );
+  }
+
+  const usageRows: RowData[] = [
+    { name: "frequent", description: "", filePath: "/f.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 15 },
+    { name: "rare", description: "", filePath: "/r.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 3 },
+    { name: "never", description: "", filePath: "/n.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
+  ];
+
+  it("when column OFF, sidebar shows only skill names (no suffix)", () => {
+    const overlay = makeOverlay(usageRows);
+    const lines = overlay.render(200);
+    const lines2 = lines.map((l) => l.replace(/\x1b\[[0-9;]*m/g, ""));
+    // Extract only the sidebar segment (text between the first and second │).
+    // Each overlay line is: │{sidebar}│{detail}│
+    const sidebarSegments = lines2
+      .map((l) => {
+        const m = l.match(/^│(.*?)│/);
+        return m ? m[1] : "";
+      })
+      .filter((s) => s.length > 0);
+    const sidebarText = sidebarSegments.join("\n");
+    // Names appear in sidebar
+    expect(sidebarText).toContain("frequent");
+    expect(sidebarText).toContain("rare");
+    expect(sidebarText).toContain("never");
+    // No "Used Nx" suffix in sidebar (it lives in detail view only)
+    expect(sidebarText).not.toMatch(/Used 15x/);
+    expect(sidebarText).not.toMatch(/Used 3x/);
+  });
+
+  it("when column OFF, hides 'Uses' header and column divider", () => {
+    const overlay = makeOverlay(usageRows);
+    const lines = overlay.render(200);
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).not.toMatch(/Skills.*Uses/);
+    expect(text).not.toMatch(/┬/);
+  });
+
+  it("u toggles column ON and shows 'Uses' header with divider", () => {
+    const overlay = makeOverlay(usageRows);
+    overlay.handleInput("u");
+    const lines = overlay.render(200);
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toMatch(/Skills.*Uses/);
+    expect(text).toMatch(/┬/);
+  });
+
+  it("when column ON, renders counts in column with vertical │ divider per row", () => {
+    const overlay = makeOverlay(usageRows);
+    overlay.handleInput("u");
+    const lines = overlay.render(200);
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    // Names still visible
+    expect(text).toContain("frequent");
+    expect(text).toContain("rare");
+    expect(text).toContain("never");
+    // Vertical divider present in multiple rows
+    const colMatches = text.match(/│/g);
+    expect(colMatches).not.toBeNull();
+    expect(colMatches!.length).toBeGreaterThanOrEqual(3); // at least 3 skill rows
+    // Detail view still shows usage (always visible, not suffix in sidebar)
+    expect(text).toMatch(/Usage:.*Used 15x/);
+  });
+
+  it("│ divider column aligns with ┬ in separator (same x-position)", () => {
+    const overlay = makeOverlay(usageRows);
+    overlay.handleInput("u");
+    const lines = overlay.render(200);
+    // Strip ANSI and find the separator line containing ┬
+    const sepLine = lines.map((l) => l.replace(/\x1b\[[0-9;]*m/g, "")).find((l) => l.includes("┬"));
+    expect(sepLine).toBeDefined();
+    const tBarPos = sepLine!.indexOf("┬");
+
+    // For each skill row, the │ inside the sidebar should be at tBarPos
+    // (The outer left │ is at position 0; the inner │ divider is at the same position as ┬)
+    // Skill rows are those containing a name and a count
+    const skillRows = lines
+      .map((l) => l.replace(/\x1b\[[0-9;]*m/g, ""))
+      .filter((l) => /^\u2502.{2,}/.test(l) && /│\s*\d+\s*│/.test(l));
+    expect(skillRows.length).toBeGreaterThanOrEqual(3);
+    for (const row of skillRows) {
+      // The second │ in the line is the divider
+      const firstPipe = row.indexOf("│");
+      const secondPipe = row.indexOf("│", firstPipe + 1);
+      expect(secondPipe).toBe(tBarPos);
+    }
+  });
+
+  it("centers 1-digit numbers in column (1 space on each side)", () => {
+    const rows: RowData[] = [
+      { name: "a", description: "", filePath: "/a.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 5 },
+    ];
+    const overlay = makeOverlay(rows);
+    overlay.handleInput("u");
+    const lines = overlay.render(200);
+    // For 1-digit (5), usageColW = 1+1+2 = 4. Layout: │ _ 5 _
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toMatch(/│ 5 /);
+  });
+
+  it("centers 2-digit numbers in column (1 space on each side)", () => {
+    const rows: RowData[] = [
+      { name: "a", description: "", filePath: "/a.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 15 },
+    ];
+    const overlay = makeOverlay(rows);
+    overlay.handleInput("u");
+    const lines = overlay.render(200);
+    // For 2-digit (15), usageColW = 1+2+2 = 5. Layout: │ _ 15 _
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toMatch(/│ 15 /);
+  });
+
+  it("centers 3-digit numbers in column (1 space on each side)", () => {
+    const rows: RowData[] = [
+      { name: "a", description: "", filePath: "/a.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 150 },
+    ];
+    const overlay = makeOverlay(rows);
+    overlay.handleInput("u");
+    const lines = overlay.render(200);
+    // For 3-digit (150), usageColW = 1+3+2 = 6. Layout: │ _ 150 _
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toMatch(/│ 150 /);
+  });
+
+  it("numbers of different digit lengths are all centered in the column", () => {
+    // Mixed: 1-digit, 2-digit, and 3-digit counts. Each should be centered:
+    // preceded by the │ + spaces, followed by spaces + outer │.
+    // The count should never be flush against the │ divider (i.e. there
+    // is at least one space on each side of the count).
+    const rows: RowData[] = [
+      { name: "a", description: "", filePath: "/a.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 1 },
+      { name: "b", description: "", filePath: "/b.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 22 },
+      { name: "c", description: "", filePath: "/c.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 333 },
+    ];
+    const overlay = makeOverlay(rows);
+    overlay.handleInput("u");
+    const lines = overlay.render(200);
+    const lines2 = lines.map((l) => l.replace(/\x1b\[[0-9;]*m/g, ""));
+    const skillRows = lines2.filter((l) => /│\s+\d+\s+│/.test(l));
+    expect(skillRows.length).toBe(3);
+    for (const row of skillRows) {
+      // Find the second │ (the divider) and the third │ (the outer right).
+      // Between them: │<spaces><count><spaces>│
+      const matches = [...row.matchAll(/│/g)];
+      const divider = matches[1].index;
+      const outerRight = matches[2].index;
+      const between = row.slice(divider + 1, outerRight);
+      // Should be spaces + digits + spaces, with at least one space on each side
+      expect(between).toMatch(/^\s+\d+\s+$/);
+    }
+  });
+
+  it("shows 'Usage: Used Nx' in detail view for skills with usage > 0", () => {
+    const overlay = makeOverlay(usageRows, 0); // frequent, usageCount=15
+    const lines = overlay.render(200);
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toMatch(/Usage:.*Used 15x/);
+  });
+
+  it("shows 'Usage: —' in detail view for skills with usageCount 0", () => {
+    const overlay = makeOverlay(usageRows, 2); // never, usageCount=0
+    const lines = overlay.render(200);
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toMatch(/Usage:.*—/);
+  });
+
+  it("sidebar width accounts for usage column when ON", () => {
+    const rows: RowData[] = [
+      { name: "short", description: "", filePath: "/s.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 999 },
+    ];
+    const overlay = makeOverlay(rows);
+    overlay.handleInput("u");
+    const sw = (overlay as any).sidebarWidth(120);
+    // "short" (5) + SIDEBAR_NAME_OFFSET (4) + usageColW (digits+3 = 6) = 15
+    expect(sw).toBeGreaterThanOrEqual(15);
+  });
+
+  it("sidebar width does NOT account for usage suffix when OFF (suffix removed)", () => {
+    const rows: RowData[] = [
+      { name: "short", description: "", filePath: "/s.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 999 },
+    ];
+    const overlay = makeOverlay(rows);
+    const sw = (overlay as any).sidebarWidth(120);
+    // "short" (5) + SIDEBAR_NAME_OFFSET (4) = 9, but min is 14
+    expect(sw).toBe(14);
+  });
+
+  it("usage column width grows with larger counts", () => {
+    const smallRows: RowData[] = [
+      { name: "a", description: "", filePath: "/a.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 9 },
+    ];
+    const bigRows: RowData[] = [
+      { name: "b", description: "", filePath: "/b.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 9999 },
+    ];
+    const overlaySmall = makeOverlay(smallRows);
+    overlaySmall.handleInput("u");
+    const wSmall = (overlaySmall as any).usageColumnWidth();
+
+    const overlayBig = makeOverlay(bigRows);
+    overlayBig.handleInput("u");
+    const wBig = (overlayBig as any).usageColumnWidth();
+
+    // 4-digit count needs wider column than 1-digit count
+    expect(wBig).toBeGreaterThan(wSmall);
+  });
+
+  it("footer shows u key hint", () => {
+    const overlay = makeOverlay(usageRows);
+    const lines = overlay.render(200);
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toMatch(/u usage/);
   });
 });

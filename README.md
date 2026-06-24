@@ -19,6 +19,7 @@ Control which skills are injected into the initial system prompt with `/skill-ga
 - **Toggle visibility** — enable or disable skills individually; disabled skills are excluded from the system prompt
 - **Bulk actions with confirm modals** — enable/disable all visible skills at once (`a`/`A`, warning-bordered modal) or reset the current scope to defaults (`r`, error-bordered modal). Bulk respects the active search filter
 - **Persistent state** — toggle state saved to `~/.pi/agent/config/skill-gate.json`
+- **Usage analytics** — every `/skill:name` invocation is counted and persisted; show a "Uses" column in the sidebar (toggle with `u`) and per-skill usage in the detail view
 - **System prompt injection** — enabled skills are automatically inserted as `<available_skills>` before each agent start via the `before_agent_start` hook
 - **Respects native-disabled** — skills with `disableModelInvocation: true` are marked with a disabled indicator and cannot be toggled
 - **Per-project configs** — project-level overrides stored under a `projects` key in the same config file, keyed by absolute path. Toggle scope between global and project with `g`
@@ -57,6 +58,7 @@ Opens an overlay showing all discovered skills.
 | `Space` | Toggle selected skill enabled/disabled |
 | `/` | Enter search mode — type to jump to matching skills (Enter commits query, filter persists) |
 | `b` | Toggle skill-list sidebar |
+| `u` | Toggle "Uses" column in sidebar (shows per-skill invocation count) |
 | `k` `j` | Scroll prompt content |
 | `Home` `End` | Jump to top/bottom |
 | `Enter` | Invoke skill into chat (confirm selection in search mode and confirm modals) |
@@ -118,6 +120,24 @@ Redundant project entries (where the project toggle matches the global effective
 > [!WARNING]
 > Corrupted JSON resets all toggles to disabled.
 
+### Usage analytics
+
+Invocation counts are stored separately at `~/.pi/agent/config/skill-gate-analytics.json`. The `input` event hook increments the count for every `/skill:name` (or `/skill:foo bar` etc.) that fires before skill expansion. Duplicate names in a single input are counted once.
+
+```json
+{
+  "counts": {
+    "code-review": 47,
+    "debugger": 12,
+    "blueprint": 3
+  }
+}
+```
+
+In the overlay, the detail view always shows a `Usage: Used Nx` line (or `Usage: —` for never-used skills). Press `u` to add a dedicated `Uses` column to the sidebar with a vertical `│` divider aligned to the `┬` in the separator and the right edge of the `Uses` header. Numbers are centered in the column and the column width auto-sizes for 1-, 2-, and 3-digit counts.
+
+To reset analytics, delete the file or set counts to `{}`.
+
 ## How It Works
 
 ```
@@ -136,6 +156,12 @@ session_start
   before_agent_start hook (in-memory filter, project-aware)
         ↓
   buildVisibleBlock() → injected into system prompt
+
+input hook (pi.on("input", ...))
+        ↓
+  match /skill:name patterns → incrementSkillUsage()
+        ↓
+  skill-gate-analytics.json (persisted, in-memory cache)
 ```
 
 ### State resolution

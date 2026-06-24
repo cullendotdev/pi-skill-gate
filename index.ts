@@ -13,12 +13,13 @@ import { DefaultResourceLoader, getAgentDir } from "@earendil-works/pi-coding-ag
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { homedir } from "node:os";
-import type { EditScope, RowData, SkillGateConfig, SkillGateTheme, SkillVisibility, ToggleState } from "./types.js";
+import type { EditScope, RowData, SkillAnalytics, SkillGateConfig, SkillGateTheme, SkillVisibility, ToggleState } from "./types.js";
 import { SkillDetailOverlay } from "./overlay.js";
 
 // ── Config persistence ──
 
 const CONFIG_PATH = path.join(homedir(), ".pi", "agent", "config", "skill-gate.json");
+const ANALYTICS_PATH = path.join(homedir(), ".pi", "agent", "config", "skill-gate-analytics.json");
 
 /**
  * In-memory cache of the parsed config. `before_agent_start` runs on every
@@ -166,6 +167,58 @@ export function resetScope(
   return cleared;
 }
 
+// ── Analytics persistence ──
+
+let cachedAnalytics: SkillAnalytics | null = null;
+
+export function invalidateAnalyticsCache(): void {
+  cachedAnalytics = null;
+}
+
+export function loadAnalytics(): SkillAnalytics {
+  if (cachedAnalytics) return cachedAnalytics;
+  let parsed: SkillAnalytics;
+  if (!fs.existsSync(ANALYTICS_PATH)) {
+    parsed = { counts: {} };
+  } else {
+    try {
+      const raw = JSON.parse(fs.readFileSync(ANALYTICS_PATH, "utf-8"));
+      parsed = { counts: raw.counts || {} };
+    } catch {
+      console.warn(`[skill-gate] Failed to parse ${ANALYTICS_PATH} — using empty counts`);
+      parsed = { counts: {} };
+    }
+  }
+  cachedAnalytics = parsed;
+  return cachedAnalytics;
+}
+
+export function saveAnalytics(a: SkillAnalytics): void {
+  fs.mkdirSync(path.dirname(ANALYTICS_PATH), { recursive: true });
+  fs.writeFileSync(ANALYTICS_PATH, JSON.stringify(a, null, 2), "utf-8");
+  cachedAnalytics = a;
+}
+
+/** Increment usage count for one or more skill names. Returns the number of
+ *  skills actually incremented (zero = no write). */
+export function incrementSkillUsage(names: string[]): number {
+  const a = loadAnalytics();
+  let changed = 0;
+  const seen = new Set<string>();
+  for (const name of names) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    if (!a.counts[name]) {
+      a.counts[name] = 1;
+    } else {
+      a.counts[name]++;
+    }
+    changed++;
+  }
+  if (changed > 0) saveAnalytics(a);
+  return changed;
+}
+
 // ── Cached skills from ResourceLoader (populated at session_start) ──
 
 let cachedSkills: Skill[] = [];
@@ -233,6 +286,16 @@ export default function (pi: ExtensionAPI) {
     cachedSkills = loader.getSkills().skills;
   });
 
+  // ── Analytics: count /skill:name invocations ──
+  pi.on("input", async (event, _ctx) => {
+    // Match /skill:name patterns (skill names are alphanumeric plus hyphens/underscores)
+    const matches = event.text.matchAll(/\/skill:([\w-]+)/g);
+    const names = new Set<string>();
+    for (const m of matches) names.add(m[1]);
+    if (names.size > 0) incrementSkillUsage([...names]);
+    return { action: "continue" };
+  });
+
   // ── System prompt hook ──
   pi.on("before_agent_start", async (event, ctx) => {
     const config = loadConfig();
@@ -276,6 +339,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       const buildRows = (): RowData[] => {
+        const analytics = loadAnalytics();
         const data: RowData[] = skills.map((s) => ({
           name: s.name,
           description: s.description,
@@ -284,6 +348,7 @@ export default function (pi: ExtensionAPI) {
           state: stateMap.get(s.name)!,
           source: sourceMap.get(s.name)!,
           globalEnabled: config.skills[s.name] === "enabled",
+          usageCount: analytics.counts[s.name] || 0,
         }));
         data.sort((a, b) => a.name.localeCompare(b.name));
         return data;

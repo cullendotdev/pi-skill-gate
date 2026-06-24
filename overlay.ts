@@ -100,6 +100,7 @@ export class SkillDetailOverlay {
   private theme: SkillGateTheme;
   private md: Markdown;
   private showSidebar = true;
+  private showUsageColumn = false;
   private searchMode = false;
   private searchQuery = "";
   private editingScope: EditScope;
@@ -258,6 +259,10 @@ export class SkillDetailOverlay {
       this.showSidebar = !this.showSidebar;
       return;
     }
+    if (data === "u" || data === "U") {
+      this.showUsageColumn = !this.showUsageColumn;
+      return;
+    }
     if ((data === "g" || data === "G") && this.hasProject) {
       this.onScopeToggle?.();
       return;
@@ -348,11 +353,20 @@ export class SkillDetailOverlay {
 
   // ── sidebar width (based on longest skill name + ▶ indicator) ──
   // Capped at 30% of terminal width so detail column always has room.
+  private usageColumnWidth(): number {
+    if (!this.showUsageColumn) return 0;
+    const maxCount = Math.max(...this.rows.map((r) => r.usageCount), 0);
+    const digits = String(maxCount).length;
+    // Column: │ (1) + count (digits) + 1 space on each side for centering
+    return 1 + digits + 2;
+  }
+
   private sidebarWidth(terminalWidth: number): number {
     const maxLen = Math.max(...this.rows.map((r) => r.name.length), 0);
     // Extra room for ·G / ·P indicators when project-context is active
     const indicatorPad = this.hasProject ? 3 : 0;
-    const natural = maxLen + SIDEBAR_NAME_OFFSET + indicatorPad;
+    const usageColW = this.usageColumnWidth();
+    const natural = maxLen + SIDEBAR_NAME_OFFSET + indicatorPad + usageColW;
     const cap = Math.max(14, Math.floor(terminalWidth * 0.30));
     return Math.max(14, Math.min(natural, cap));
   }
@@ -380,14 +394,31 @@ export class SkillDetailOverlay {
       sbScroll = Math.min(sbScroll, total - skillArea);
     }
 
-    const leftLabel = T.dim(" Skills");
-    const idxLabel = T.accent(`[${this.currentIdx + 1}/${this.rows.length}]`);
-    const leftVw = visibleWidth(leftLabel);
-    const idxVw = visibleWidth(idxLabel);
-    const gap = Math.max(1, sidebarW - leftVw - idxVw);
-    const sbHeader = leftLabel + " ".repeat(gap) + idxLabel;
-    lines.push(sbHeader);
-    lines.push(T.dim("─".repeat(sidebarW)));
+    const usageColW = this.usageColumnWidth();
+
+    if (this.showUsageColumn) {
+      // Two-column header with Skills + Uses labels
+      const skillsLabel = T.dim(" Skills");
+      const idxLabel = T.accent(`[${this.currentIdx + 1}/${this.rows.length}]`);
+      const usesLabel = T.dim("Uses");
+      const leftPart = skillsLabel + " " + idxLabel;
+      const leftVw = visibleWidth(leftPart);
+      const usesVw = visibleWidth(usesLabel);
+      const gap = Math.max(1, sidebarW - leftVw - usesVw);
+      lines.push(leftPart + " ".repeat(gap) + usesLabel);
+      // Separator with ┬ at column boundary
+      const skillsSepW = sidebarW - usageColW;
+      lines.push(T.dim("─".repeat(skillsSepW)) + T.dim("┬") + T.dim("─".repeat(usageColW - 1)));
+    } else {
+      // Single-column header (no usage column)
+      const leftLabel = T.dim(" Skills");
+      const idxLabel = T.accent(`[${this.currentIdx + 1}/${this.rows.length}]`);
+      const leftVw = visibleWidth(leftLabel);
+      const idxVw = visibleWidth(idxLabel);
+      const gap = Math.max(1, sidebarW - leftVw - idxVw);
+      lines.push(leftLabel + " ".repeat(gap) + idxLabel);
+      lines.push(T.dim("─".repeat(sidebarW)));
+    }
 
     if (total === 0 && this.searchMode) {
       // No matches
@@ -425,7 +456,14 @@ export class SkillDetailOverlay {
           } else {
             styledName = baseStyle(r.name);
           }
-          styledName = truncateToWidth(styledName, sidebarW - SIDEBAR_NAME_OFFSET - indicatorBudget);
+
+          if (this.showUsageColumn) {
+            // Column mode: no suffix, name truncated to make room for │ + count
+            styledName = truncateToWidth(styledName, sidebarW - SIDEBAR_NAME_OFFSET - indicatorBudget - usageColW);
+          } else {
+            // No suffix; name uses full sidebar width minus arrow + indicator pad
+            styledName = truncateToWidth(styledName, sidebarW - SIDEBAR_NAME_OFFSET - indicatorBudget);
+          }
 
           // Build final row
           let styled: string;
@@ -444,9 +482,28 @@ export class SkillDetailOverlay {
             }
           }
 
-          // Pad by visible width (ANSI escape codes inflate .length, breaking .padEnd)
-          const vw = visibleWidth(styled);
-          lines.push(vw < sidebarW ? styled + " ".repeat(sidebarW - vw) : styled);
+          // Dedicated usage column with vertical │ divider
+          if (usageColW > 0) {
+            // Pad name+indicator with spaces so the │ sits at sidebarW - usageColW
+            // (same column as the ┬ in the separator and aligned with "Uses" header)
+            const dividerPos = sidebarW - usageColW;
+            const currentVw = visibleWidth(styled);
+            const padToDivider = Math.max(0, dividerPos - currentVw);
+            styled += " ".repeat(padToDivider);
+            // Now append the │ divider + centered count column
+            const countStr = String(r.usageCount);
+            const digits = countStr.length;
+            // Center the count in (usageColW - 1) chars (after the │)
+            // With 1 space on each side, this works for 1-, 2-, 3-digit counts
+            const leftPad = Math.max(1, Math.floor((usageColW - 1 - digits) / 2));
+            const rightPad = Math.max(1, usageColW - 1 - digits - leftPad);
+            styled += T.dim("│") + " ".repeat(leftPad) + T.dim(countStr) + " ".repeat(rightPad);
+            lines.push(styled);
+          } else {
+            // No column: pad the row to sidebarW
+            const vw = visibleWidth(styled);
+            lines.push(vw < sidebarW ? styled + " ".repeat(sidebarW - vw) : styled);
+          }
         } else {
           lines.push(" ".repeat(sidebarW));
         }
@@ -488,6 +545,13 @@ export class SkillDetailOverlay {
         sourceCtx = T.dim(" · overridden at project level");
       }
       descLines.push(" " + T.bold("Status: ") + st + sourceCtx + toggleHint);
+    }
+
+    // Usage count
+    if (row.usageCount > 0) {
+      descLines.push(" " + T.bold("Usage: ") + T.dim(`Used ${row.usageCount}x`));
+    } else {
+      descLines.push(" " + T.bold("Usage: ") + T.dim("—"));
     }
 
     if (row.description) {
@@ -787,6 +851,7 @@ export class SkillDetailOverlay {
     const hasMore = meta.bodyLength > meta.remaining;
     const scopeKey = this.hasProject ? " · g scope" : "";
     const bulkKeys = " · a enable all · A disable all · r reset";
+    const usageKey = " · u usage";
     let left: string;
     if (this.searchMode) {
       left = " / search · Esc cancel · Enter confirm" + bulkKeys;
@@ -795,9 +860,9 @@ export class SkillDetailOverlay {
       const up = this.scrollOffset > 0 ? "↑" : " ";
       const endLine = Math.min(this.scrollOffset + meta.remaining, meta.bodyLength);
       const dn = endLine < meta.bodyLength ? "↓" : " ";
-      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · / search · b sidebar${scopeKey}${bulkKeys} · enter invoke · Esc close`;
+      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · / search · b sidebar${scopeKey}${bulkKeys}${usageKey} · enter invoke · Esc close`;
     } else {
-      left = ` ↑↓ skill · / search · b sidebar${scopeKey}${bulkKeys} · enter invoke · Esc close`;
+      left = ` ↑↓ skill · / search · b sidebar${scopeKey}${bulkKeys}${usageKey} · enter invoke · Esc close`;
     }
     const idx = this.searchMode
       ? (() => {

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0 — 2026-06-23
+
+### Added
+- **Usage analytics** — every `/skill:name` invocation is counted via the `input` event hook and persisted to `~/.pi/agent/config/skill-gate-analytics.json`
+- **`Usage:` line in detail view** — always visible below Status; shows `Used Nx` (dimmed) or `—` for never-used skills
+- **Toggleable "Uses" column in sidebar** — press `u` to show a dedicated column with a vertical `│` divider aligned to the `┬` in the separator. Numbers are centered; column width auto-sizes for 1-, 2-, and 3-digit counts
+- Exported persistence helpers: `loadAnalytics`, `saveAnalytics`, `incrementSkillUsage`, `invalidateAnalyticsCache`
+- 33 new tests (179 total, up from 146)
+
+### Changed
+- Sidebar header now shows a two-column layout (`Skills [n/m] Uses`) with a `┬` divider when the column is enabled; default single-column layout when `u` is off
+- `RowData` gained a `usageCount: number` field
+
+---
+
 ## 0.6.0 — 2026-06-23
 
 ### Added

@@ -27,10 +27,15 @@ import {
   resetScope,
   buildVisibleBlock,
   invalidateConfigCache,
+  loadAnalytics,
+  saveAnalytics,
+  incrementSkillUsage,
+  invalidateAnalyticsCache,
 } from "./index.js";
-import type { SkillGateConfig, SkillVisibility } from "./types.js";
+import type { SkillGateConfig, SkillAnalytics, SkillVisibility } from "./types.js";
 
 const CONFIG_PATH = "/home/test-user/.pi/agent/config/skill-gate.json";
+const ANALYTICS_PATH = "/home/test-user/.pi/agent/config/skill-gate-analytics.json";
 
 // ── Helpers ──
 
@@ -43,6 +48,7 @@ beforeEach(() => {
   // Reset the module-level config cache between tests so each test gets a
   // clean slate (otherwise a warm cache from a prior test would skip disk I/O).
   invalidateConfigCache();
+  invalidateAnalyticsCache();
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -672,6 +678,188 @@ describe("config cache", () => {
 
     // Simulate 1000 agent starts between toggles.
     for (let i = 0; i < 1000; i++) loadConfig();
+    expect(fs.readFileSync).toHaveBeenCalledTimes(0);
+  });
+});
+
+// ── Analytics persistence ──
+
+function emptyAnalytics(): SkillAnalytics {
+  return { counts: {} };
+}
+
+describe("loadAnalytics", () => {
+  it("returns empty analytics when no file exists", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    const a = loadAnalytics();
+    expect(a).toEqual({ counts: {} });
+    expect(fs.existsSync).toHaveBeenCalledWith(ANALYTICS_PATH);
+  });
+
+  it("parses valid JSON analytics", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ counts: { foo: 3, bar: 7 } }) as any
+    );
+    const a = loadAnalytics();
+    expect(a).toEqual({ counts: { foo: 3, bar: 7 } });
+  });
+
+  it("tolerates missing 'counts' key", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}) as any);
+    const a = loadAnalytics();
+    expect(a).toEqual({ counts: {} });
+  });
+
+  it("returns empty analytics on corrupt JSON", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue("{broken}" as any);
+    const a = loadAnalytics();
+    expect(a).toEqual({ counts: {} });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[skill-gate] Failed to parse")
+    );
+    warnSpy.mockRestore();
+  });
+});
+
+describe("saveAnalytics", () => {
+  it("creates parent directories", () => {
+    saveAnalytics(emptyAnalytics());
+    expect(fs.mkdirSync).toHaveBeenCalledWith(
+      "/home/test-user/.pi/agent/config",
+      { recursive: true }
+    );
+  });
+
+  it("writes valid JSON with 2-space indent", () => {
+    const a: SkillAnalytics = { counts: { alpha: 5, beta: 3 } };
+    saveAnalytics(a);
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      ANALYTICS_PATH,
+      JSON.stringify(a, null, 2),
+      "utf-8"
+    );
+  });
+});
+
+describe("incrementSkillUsage", () => {
+  it("creates a new count for a never-used skill", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    const n = incrementSkillUsage(["newskill"]);
+    expect(n).toBe(1);
+    const a = loadAnalytics();
+    expect(a.counts["newskill"]).toBe(1);
+  });
+
+  it("increments an existing count", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ counts: { existingskill: 5 } }) as any
+    );
+    const n = incrementSkillUsage(["existingskill"]);
+    expect(n).toBe(1);
+    const a = loadAnalytics();
+    expect(a.counts["existingskill"]).toBe(6);
+  });
+
+  it("increments multiple skills in one call", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ counts: { a: 1, b: 2 } }) as any
+    );
+    const n = incrementSkillUsage(["a", "b", "c"]);
+    expect(n).toBe(3);
+    const a = loadAnalytics();
+    expect(a.counts["a"]).toBe(2);
+    expect(a.counts["b"]).toBe(3);
+    expect(a.counts["c"]).toBe(1);
+  });
+
+  it("deduplicates names in a single call (only increments once per name)", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ counts: { dup: 1 } }) as any
+    );
+    const n = incrementSkillUsage(["dup", "dup"]);
+    expect(n).toBe(1); // only one unique name
+    const a = loadAnalytics();
+    expect(a.counts["dup"]).toBe(2); // incremented only once
+  });
+
+  it("writes to disk exactly once per changed call", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    incrementSkillUsage(["a", "b"]);
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 0 and does not write when no skills are provided", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    const n = incrementSkillUsage([]);
+    expect(n).toBe(0);
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(0);
+  });
+});
+
+describe("analytics cache", () => {
+  it("loadAnalytics reads disk on first call", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ counts: { x: 1 } }) as any
+    );
+    loadAnalytics();
+    expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("loadAnalytics does not read disk on subsequent calls (cache hit)", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ counts: { x: 1 } }) as any
+    );
+    loadAnalytics();
+    loadAnalytics();
+    loadAnalytics();
+    expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the same reference on cache hit", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ counts: { x: 1 } }) as any
+    );
+    const a1 = loadAnalytics();
+    const a2 = loadAnalytics();
+    expect(a1).toBe(a2);
+  });
+
+  it("reads disk again after invalidateAnalyticsCache()", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ counts: { x: 1 } }) as any
+    );
+    loadAnalytics();
+    invalidateAnalyticsCache();
+    loadAnalytics();
+    expect(fs.readFileSync).toHaveBeenCalledTimes(2);
+  });
+
+  it("caches the empty fallback (no file → no disk reads after)", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    loadAnalytics();
+    loadAnalytics();
+    expect(fs.readFileSync).toHaveBeenCalledTimes(0);
+    expect(fs.existsSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("incrementSkillUsage updates cache so next loadAnalytics hits cache", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    incrementSkillUsage(["hot"]);
+    vi.mocked(fs.readFileSync).mockClear();
+
+    const a = loadAnalytics();
+    expect(a.counts["hot"]).toBe(1);
     expect(fs.readFileSync).toHaveBeenCalledTimes(0);
   });
 });
