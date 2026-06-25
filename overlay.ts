@@ -29,6 +29,25 @@ const SIDEBAR_NAME_OFFSET = SIDEBAR_ARROW_WIDTH + SIDEBAR_CURRENT_PAD + 1; // = 
 
 // ── Helpers ──
 
+/**
+ * Highlight the first occurrence of query in ANSI-styled text.
+ * Searches visible text (stripped of ANSI codes) and wraps the match region.
+ */
+export function highlightInStyledText(styled: string, query: string, matchStyle: (t: string) => string): string {
+  if (!query) return styled;
+  // Case-sensitive literal match first — avoids ANSI-code interference.
+  const qi = styled.indexOf(query);
+  if (qi >= 0) {
+    return styled.slice(0, qi) + matchStyle(query) + styled.slice(qi + query.length);
+  }
+  // Case-insensitive fallback: ANSI codes contain no lowercase letters, so
+  // toLowerCase() preserves their byte offsets and indexOf is safe.
+  const lower = styled.toLowerCase();
+  const li = lower.indexOf(query.toLowerCase());
+  if (li < 0) return styled;
+  return styled.slice(0, li) + matchStyle(styled.slice(li, li + query.length)) + styled.slice(li + query.length);
+}
+
 export function wrapText(text: string, maxWidth: number): string[] {
   if (maxWidth <= 0) return [];
   const words = text.split(/\s+/);
@@ -103,6 +122,7 @@ export class SkillDetailOverlay {
   private showUsageColumn = false;
   private searchMode = false;
   private searchQuery = "";
+  private fullTextSearch = false; // when true, search also matches description + body
   private editingScope: EditScope;
   private projectName?: string;
   private hasProject: boolean;
@@ -161,6 +181,7 @@ export class SkillDetailOverlay {
       if (matchesKey(data, Key.escape)) {
         this.searchMode = false;
         this.searchQuery = "";
+        this.fullTextSearch = false;
         return;
       }
       if (matchesKey(data, Key.enter)) {
@@ -207,10 +228,17 @@ export class SkillDetailOverlay {
       return; // ignore other keys while searching
     }
 
-    // ── enter search mode on "/" ──
+    // ── enter search mode on "/" (name-only) or "f" (full-text) ──
     if (data === "/" || matchesKey(data, Key.slash)) {
       this.searchMode = true;
       this.searchQuery = "";
+      this.fullTextSearch = false;
+      return;
+    }
+    if (data === "f" || data === "F") {
+      this.searchMode = true;
+      this.searchQuery = "";
+      this.fullTextSearch = true;
       return;
     }
 
@@ -252,6 +280,13 @@ export class SkillDetailOverlay {
       return;
     }
     if (matchesKey(data, Key.escape)) {
+      // If a filter is active (from a previous search), clear it first
+      if (this.searchQuery) {
+        this.searchQuery = "";
+        this.fullTextSearch = false;
+        this.onSearchQueryChanged();
+        return;
+      }
       this.onClose?.();
       return;
     }
@@ -301,23 +336,44 @@ export class SkillDetailOverlay {
   /** Compute filtered skill indices ordered by match quality (prefix first, then substring).
  *  The filter is active whenever `searchQuery` is non-empty, regardless of
  *  whether `searchMode` is on — this lets the sidebar keep filtering after
- *  the user commits a search with Enter. */
+ *  the user commits a search with Enter.
+ *
+ *  When `fullTextSearch` is true, matches also scan description and skill body
+ *  (SKILL.md content) in addition to the skill name. */
   private getFilteredIndices(): number[] {
     const q = this.searchQuery.toLowerCase();
     if (!q) return this.rows.map((_, i) => i);
     const prefix: number[] = [];
     const substr: number[] = [];
+    const descBody: number[] = []; // description/body matches (full-text only)
     for (let i = 0; i < this.rows.length; i++) {
-      const name = this.rows[i].name.toLowerCase();
+      const r = this.rows[i];
+      const name = r.name.toLowerCase();
       if (name.startsWith(q)) {
         prefix.push(i);
       } else if (name.includes(q)) {
         substr.push(i);
+      } else if (this.fullTextSearch) {
+        // Search description and skill body
+        const desc = r.description.toLowerCase();
+        if (desc.includes(q)) {
+          descBody.push(i);
+          continue;
+        }
+        try {
+          const body = readSkillBody(r.filePath).toLowerCase();
+          if (body.includes(q)) {
+            descBody.push(i);
+          }
+        } catch {
+          // skip on read errors
+        }
       }
     }
     prefix.sort((a, b) => this.rows[a].name.localeCompare(this.rows[b].name));
     substr.sort((a, b) => this.rows[a].name.localeCompare(this.rows[b].name));
-    return [...prefix, ...substr];
+    descBody.sort((a, b) => this.rows[a].name.localeCompare(this.rows[b].name));
+    return [...prefix, ...substr, ...descBody];
   }
 
   /** Called when the search query changes: jump to the best match. */
@@ -420,7 +476,7 @@ export class SkillDetailOverlay {
       lines.push(T.dim("─".repeat(sidebarW)));
     }
 
-    if (total === 0 && this.searchMode) {
+    if (total === 0 && (this.searchMode || this.fullTextSearch)) {
       // No matches
       const msg = T.dim(" (no matches)");
       lines.push(msg + " ".repeat(Math.max(0, sidebarW - visibleWidth(msg))));
@@ -451,7 +507,7 @@ export class SkillDetailOverlay {
 
           // Highlight search match within the name
           let styledName: string;
-          if (this.searchMode && this.searchQuery) {
+          if ((this.searchMode || this.fullTextSearch) && this.searchQuery) {
             styledName = highlightMatch(r.name, this.searchQuery, baseStyle, (t) => T.accent(T.bold(t)));
           } else {
             styledName = baseStyle(r.name);
@@ -556,8 +612,13 @@ export class SkillDetailOverlay {
 
     if (row.description) {
       descLines.push(T.bold(" Description:"));
+      const hlActive = this.fullTextSearch && this.searchQuery;
       for (const dl of wrapText(row.description, padW)) {
-        descLines.push("  " + T.muted(dl));
+        if (hlActive) {
+          descLines.push("  " + highlightMatch(dl, this.searchQuery, (t) => T.muted(t), (t) => T.accent(T.bold(t))));
+        } else {
+          descLines.push("  " + T.muted(dl));
+        }
       }
       descLines.push("");
     }
@@ -620,7 +681,10 @@ export class SkillDetailOverlay {
         sc = isThumb ? T.accent("█") : T.dim("░");
       }
 
-      const mdLine = mdLines[i];
+      let mdLine = mdLines[i];
+      if (this.fullTextSearch && this.searchQuery) {
+        mdLine = highlightInStyledText(mdLine, this.searchQuery, (t) => T.accent(T.bold(t)));
+      }
       const mdVw = visibleWidth(mdLine);
       const paddedMd = mdVw < contentW ? mdLine + " ".repeat(contentW - mdVw) : truncateToWidth(mdLine, contentW);
       bodyLines.push(gutter + paddedMd + sc);
@@ -762,8 +826,15 @@ export class SkillDetailOverlay {
     // Header: search bar, scope indicator, or subtitle
     if (this.searchMode) {
       const cursor = this.theme.accent("█");
-      const searchLabel = this.theme.dim(" /") + " " + this.searchQuery + cursor;
+      const prefix = this.fullTextSearch ? T.dim(" f") : T.dim(" /");
+      const searchLabel = prefix + " " + this.searchQuery + cursor;
       lines.push(borderLine(searchLabel, innerW, T));
+      return 1;
+    }
+    // When a full-text filter is active (committed via Enter), show a hint
+    if (this.fullTextSearch && this.searchQuery) {
+      const filterLabel = T.dim(`  Full-text filter: "${this.searchQuery}"`) + T.muted("  [Esc to clear]");
+      lines.push(borderLine(filterLabel, innerW, T));
       return 1;
     }
     if (this.hasProject) {
@@ -852,17 +923,18 @@ export class SkillDetailOverlay {
     const scopeKey = this.hasProject ? " · g scope" : "";
     const bulkKeys = " · a enable all · A disable all · r reset";
     const usageKey = " · u usage";
+    const searchKey = this.fullTextSearch ? "f" : "/";
     let left: string;
     if (this.searchMode) {
-      left = " / search · Esc cancel · Enter confirm" + bulkKeys;
+      left = ` ${searchKey} search · Esc cancel · Enter confirm` + bulkKeys;
     } else if (hasMore) {
       const pct = meta.maxOffset > 0 ? Math.round((this.scrollOffset / meta.maxOffset) * 100) : 0;
       const up = this.scrollOffset > 0 ? "↑" : " ";
       const endLine = Math.min(this.scrollOffset + meta.remaining, meta.bodyLength);
       const dn = endLine < meta.bodyLength ? "↓" : " ";
-      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · / search · b sidebar${scopeKey}${bulkKeys}${usageKey} · enter invoke · Esc close`;
+      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · / search · f full-text · b sidebar${scopeKey}${bulkKeys}${usageKey} · enter invoke · Esc close`;
     } else {
-      left = ` ↑↓ skill · / search · b sidebar${scopeKey}${bulkKeys}${usageKey} · enter invoke · Esc close`;
+      left = ` ↑↓ skill · / search · f full-text · b sidebar${scopeKey}${bulkKeys}${usageKey} · enter invoke · Esc close`;
     }
     const idx = this.searchMode
       ? (() => {

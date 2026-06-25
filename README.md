@@ -17,6 +17,7 @@ Control which skills are injected into the initial system prompt with `/skill-ga
 - **Complete skill coverage** — uses pi's `ResourceLoader` API with dynamic directory discovery to match `/skill:` autocomplete (including extension-contributed, project-memory, and migrated package skills)
 - **Skill browser** — view the complete `SKILL.md` content (description, when-to-use, procedure, prompt body) for every skill with syntax-highlighted markdown rendering
 - **Toggle visibility** — enable or disable skills individually; disabled skills are excluded from the system prompt
+- **Search with highlighting** — `/` searches by skill name; `f` performs full-text search across names, descriptions, and SKILL.md bodies. Matching text is highlighted in the sidebar, description, and rendered prompt body
 - **Bulk actions with confirm modals** — enable/disable all visible skills at once (`a`/`A`, warning-bordered modal) or reset the current scope to defaults (`r`, error-bordered modal). Bulk respects the active search filter
 - **Persistent state** — toggle state saved to `~/.pi/agent/config/skill-gate.json`
 - **Usage analytics** — every `/skill:name` invocation is counted and persisted; show a "Uses" column in the sidebar (toggle with `u`) and per-skill usage in the detail view
@@ -56,7 +57,8 @@ Opens an overlay showing all discovered skills.
 |---|---|
 | `↑` `↓` | Navigate skills |
 | `Space` | Toggle selected skill enabled/disabled |
-| `/` | Enter search mode — type to jump to matching skills (Enter commits query, filter persists) |
+| `/` | Enter name-only search mode — type to filter skills by name (Enter commits query, filter persists) |
+| `f` | Enter full-text search mode — type to filter skills by name, description, and body (Enter commits query, filter persists) |
 | `b` | Toggle skill-list sidebar |
 | `u` | Toggle "Uses" column in sidebar (shows per-skill invocation count) |
 | `k` `j` | Scroll prompt content |
@@ -66,7 +68,7 @@ Opens an overlay showing all discovered skills.
 | `a` | Open "Enable all" confirm modal (warning border) — respects active filter |
 | `A` | Open "Disable all" confirm modal (warning border) — respects active filter |
 | `r` | Open "Reset scope" confirm modal (error border) |
-| `Esc` | Close (cancel search when searching; cancel confirm modal when open) |
+| `Esc` | Close (cancel search when searching; clear active filter on first press; cancel confirm modal when open) |
 
 ### Confirm modals
 

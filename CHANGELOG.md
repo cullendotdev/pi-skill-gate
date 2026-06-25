@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.8.0 — 2026-06-25
+
+### Added
+- **Full-text search** — press `f` (or `F`) to search through skill descriptions and
+  SKILL.md body content in addition to skill names. The sidebar filters to show only
+  matching skills, and matching text is highlighted in both the description section
+  and the rendered markdown body.
+- **`highlightInStyledText` helper** — highlights the first occurrence of a query
+  within ANSI-styled text (rendered markdown), with case-insensitive fallback.
+  Exported for reuse.
+- **Full-text filter label** — after committing a full-text search with Enter, the
+  header shows a persistent `Full-text filter: "..."` label with an `[Esc to clear]`
+  hint. The filter survives exiting search mode.
+- **Esc clears filter before closing** — when a search filter is active in normal
+  mode, the first Esc clears it; the second Esc closes the overlay.
+- 30 new tests (209 total, up from 179)
+
+### Changed
+- Header now distinguishes full-text search (`f`) from name-only search (`/`) in
+  the search bar prefix.
+- Footer key hints updated to show `f full-text` alongside the existing `/ search`.
+- Sidebar name highlighting now persists with a full-text filter even after exiting
+  search mode.
+
+---
+
 ## 0.7.0 — 2026-06-23
 
 ### Added

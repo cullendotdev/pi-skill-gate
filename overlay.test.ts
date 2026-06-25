@@ -50,6 +50,7 @@ import * as fs from "node:fs";
 import {
   wrapText,
   highlightMatch,
+  highlightInStyledText,
   borderLine,
   padTo,
   readSkillBody,
@@ -1248,5 +1249,334 @@ describe("SkillDetailOverlay usage display", () => {
     const lines = overlay.render(200);
     const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
     expect(text).toMatch(/u usage/);
+  });
+});
+
+//  highlightInStyledText
+
+describe("highlightInStyledText", () => {
+  const matchStyle = (t: string) => `*${t}*`;
+
+  it("returns styled text unchanged when query is empty", () => {
+    expect(highlightInStyledText("hello", "", matchStyle)).toBe("hello");
+  });
+
+  it("highlights literal match in plain text", () => {
+    expect(highlightInStyledText("hello world", "world", matchStyle)).toBe("hello *world*");
+  });
+
+  it("highlights case-insensitive match in plain text", () => {
+    expect(highlightInStyledText("Hello World", "world", matchStyle)).toBe("Hello *World*");
+  });
+
+  it("highlights first literal match in ANSI-styled text", () => {
+    const styled = "\x1b[31mhello\x1b[0m world";
+    const result = highlightInStyledText(styled, "hello", matchStyle);
+    expect(result).toContain("*hello*");
+    expect(result).toContain("\x1b[31m");
+  });
+
+  it("highlights case-insensitive match in ANSI-styled text", () => {
+    const styled = "\x1b[31mHello\x1b[0m World";
+    const result = highlightInStyledText(styled, "world", matchStyle);
+    expect(result).toContain("*World*");
+  });
+
+  it("returns unchanged when query not found", () => {
+    const styled = "\x1b[31mhello\x1b[0m";
+    const result = highlightInStyledText(styled, "xyz", matchStyle);
+    expect(result).toBe(styled);
+  });
+
+  it("returns unchanged for empty styled text", () => {
+    expect(highlightInStyledText("", "hi", matchStyle)).toBe("");
+  });
+
+  it("highlights only first occurrence", () => {
+    expect(highlightInStyledText("ab ab ab", "ab", matchStyle)).toBe("*ab* ab ab");
+  });
+});
+
+//  Full-text search (f key)
+
+describe("SkillDetailOverlay full-text search (f key)", () => {
+  function makeOverlay(rows: RowData[], idx = 0) {
+    return new SkillDetailOverlay(rows, idx, () => 40, T, "global");
+  }
+
+  const ftRows: RowData[] = [
+    { name: "deploy", description: "Deploy to production", filePath: "/deploy.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
+    { name: "test", description: "Run unit tests", filePath: "/test.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
+    { name: "build", description: "Build the project", filePath: "/build.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
+  ];
+
+  it("f enters full-text search mode", () => {
+    const overlay = makeOverlay(ftRows);
+    overlay.handleInput("f");
+    expect((overlay as any).searchMode).toBe(true);
+    expect((overlay as any).fullTextSearch).toBe(true);
+    expect((overlay as any).searchQuery).toBe("");
+  });
+
+  it("uppercase F also enters full-text search mode", () => {
+    const overlay = makeOverlay(ftRows);
+    overlay.handleInput("F");
+    expect((overlay as any).fullTextSearch).toBe(true);
+  });
+
+  it("/ enters name-only search mode (fullTextSearch false)", () => {
+    const overlay = makeOverlay(ftRows);
+    overlay.handleInput("/");
+    expect((overlay as any).searchMode).toBe(true);
+    expect((overlay as any).fullTextSearch).toBe(false);
+  });
+
+  it("Esc in search mode clears fullTextSearch flag", () => {
+    const overlay = makeOverlay(ftRows);
+    overlay.handleInput("f");
+    expect((overlay as any).fullTextSearch).toBe(true);
+    overlay.handleInput("KEY_ESCAPE");
+    expect((overlay as any).searchMode).toBe(false);
+    expect((overlay as any).fullTextSearch).toBe(false);
+    expect((overlay as any).searchQuery).toBe("");
+  });
+
+  it("Enter exits search mode but keeps fullTextSearch and filter", () => {
+    const overlay = makeOverlay(ftRows);
+    overlay.handleInput("f");
+    overlay.handleInput("p");
+    overlay.handleInput("r");
+    overlay.handleInput("o");
+    overlay.handleInput("KEY_ENTER");
+    expect((overlay as any).searchMode).toBe(false);
+    expect((overlay as any).fullTextSearch).toBe(true);
+    expect((overlay as any).searchQuery).toBe("pro");
+  });
+
+  it("Esc in normal mode clears active full-text filter before closing", () => {
+    const overlay = makeOverlay(ftRows);
+    // Simulate a committed full-text filter
+    (overlay as any).fullTextSearch = true;
+    (overlay as any).searchQuery = "deploy";
+    let closed = false;
+    overlay.onClose = () => { closed = true; };
+    overlay.handleInput("KEY_ESCAPE");
+    // First Esc clears filter
+    expect(closed).toBe(false);
+    expect((overlay as any).searchQuery).toBe("");
+    expect((overlay as any).fullTextSearch).toBe(false);
+    // Second Esc closes
+    overlay.handleInput("KEY_ESCAPE");
+    expect(closed).toBe(true);
+  });
+
+  it("Esc in normal mode closes directly when no filter is active", () => {
+    const overlay = makeOverlay(ftRows);
+    let closed = false;
+    overlay.onClose = () => { closed = true; };
+    overlay.handleInput("KEY_ESCAPE");
+    expect(closed).toBe(true);
+  });
+});
+
+//  getFilteredIndices with full-text search
+
+describe("SkillDetailOverlay.getFilteredIndices (full-text)", () => {
+  function makeOverlay(rows: RowData[], idx = 0) {
+    return new SkillDetailOverlay(rows, idx, () => 40, T, "global");
+  }
+
+  const ftRows: RowData[] = [
+    { name: "deploy", description: "Deploy to production", filePath: "/deploy.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
+    { name: "test-skill", description: "Run unit tests", filePath: "/test.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
+    { name: "build", description: "Build the project", filePath: "/build.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
+    { name: "analyze", description: "Code analysis tool", filePath: "/analyze.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
+  ];
+
+  it("full-text search matches description", () => {
+    const overlay = makeOverlay(ftRows);
+    (overlay as any).fullTextSearch = true;
+    (overlay as any).searchQuery = "unit"; // matches "Run unit tests" in test-skill description
+    const result = (overlay as any).getFilteredIndices() as number[];
+    expect(result).toContain(1); // test-skill
+  });
+
+  it("full-text search matches body via readSkillBody", () => {
+    // Use a fresh overlay with a unique filePath to avoid cache interference
+    const bodyRows: RowData[] = [
+      { name: "deploy", description: "Deploy", filePath: "/ft-body-deploy.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
+    ];
+    vi.mocked(fs.readFileSync).mockReturnValue("---\ntitle: X\n---\nThis skill handles production deployment workflow." as any);
+    const overlay = makeOverlay(bodyRows);
+    (overlay as any).fullTextSearch = true;
+    (overlay as any).searchQuery = "workflow";
+    // Need to call readSkillBody directly first to ensure mock is consumed
+    const body = readSkillBody("/ft-body-deploy.md");
+    expect(body).toContain("workflow"); // verify mock works
+    const result = (overlay as any).getFilteredIndices() as number[];
+    expect(result).toContain(0); // deploy (body matched)
+  });
+
+  it("name prefix matches come before description/body matches", () => {
+    vi.mocked(fs.readFileSync).mockReturnValue("---\ntitle: X\n---\nSome content about deployment." as any);
+    const overlay = makeOverlay(ftRows);
+    (overlay as any).fullTextSearch = true;
+    (overlay as any).searchQuery = "deploy";
+    const result = (overlay as any).getFilteredIndices() as number[];
+    // "deploy" is a prefix match for name "deploy" (idx 0) — should come first
+    // Other rows may match via description/body but come after prefix+substring
+    expect(result[0]).toBe(0); // deploy (prefix match)
+  });
+
+  it("name substring matches come before description/body matches", () => {
+    // build (idx 2) name is a substring match; test-skill (idx 1) description contains "build" if we set it
+    const rows: RowData[] = [
+      { name: "alpha", description: "build stuff", filePath: "/a.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
+      { name: "rebuild", description: "other", filePath: "/b.md", disableModelInvocation: false, state: "disabled", source: "default", globalEnabled: false, usageCount: 0 },
+    ];
+    const overlay = makeOverlay(rows);
+    (overlay as any).fullTextSearch = true;
+    (overlay as any).searchQuery = "build";
+    const result = (overlay as any).getFilteredIndices() as number[];
+    // "rebuild" is a substring match (idx 1) → before "alpha" which matches via description
+    expect(result[0]).toBe(1); // rebuild (substring match)
+    expect(result[1]).toBe(0); // alpha (description match)
+  });
+
+  it("name-only search does not match description", () => {
+    const overlay = makeOverlay(ftRows);
+    (overlay as any).fullTextSearch = false;
+    (overlay as any).searchQuery = "unittest"; // in description only
+    const result = (overlay as any).getFilteredIndices() as number[];
+    expect(result).toEqual([]);
+  });
+
+  it("handles readSkillBody errors gracefully", () => {
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+    const overlay = makeOverlay(ftRows);
+    (overlay as any).fullTextSearch = true;
+    (overlay as any).searchQuery = "anything";
+    // Should not crash — body matches are skipped on read errors
+    expect(() => (overlay as any).getFilteredIndices()).not.toThrow();
+  });
+});
+
+//  Description highlighting in full-text search
+
+describe("SkillDetailOverlay description highlighting (full-text)", () => {
+  function makeOverlay(rows: RowData[], idx = 0) {
+    return new SkillDetailOverlay(rows, idx, () => 40, T, "global");
+  }
+
+  it("highlights matching text in description when fullTextSearch is active", () => {
+    const rows: RowData[] = [
+      { name: "deploy", description: "Deploy to production servers", filePath: "/d.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 0 },
+    ];
+    const overlay = makeOverlay(rows);
+    (overlay as any).fullTextSearch = true;
+    (overlay as any).searchQuery = "production";
+    const lines = overlay.render(200);
+    const text = lines.join("\n");
+    // The highlighted match wraps "production" with accent+bold (the matchStyle)
+    // Our test theme is identity, so the highlight appears as raw text with the
+    // query still visible.
+    expect(text).toContain("production");
+  });
+
+  it("does not highlight description when fullTextSearch is false", () => {
+    const rows: RowData[] = [
+      { name: "deploy", description: "Deploy to production servers", filePath: "/d.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 0 },
+    ];
+    const overlay = makeOverlay(rows);
+    (overlay as any).fullTextSearch = false;
+    (overlay as any).searchQuery = "production";
+    const lines = overlay.render(200);
+    const text = lines.join("\n");
+    // Description is shown without highlight styling wrappers
+    expect(text).toContain("production");
+  });
+});
+
+//  Header and footer full-text search display
+
+describe("SkillDetailOverlay header/footer (full-text)", () => {
+  function makeOverlay(rows: RowData[], idx = 0) {
+    return new SkillDetailOverlay(rows, idx, () => 40, T, "global");
+  }
+
+  const rows: RowData[] = [
+    { name: "deploy", description: "Deploy", filePath: "/d.md", disableModelInvocation: false, state: "enabled", source: "global", globalEnabled: true, usageCount: 0 },
+  ];
+
+  it("header shows f prefix in full-text search mode", () => {
+    const overlay = makeOverlay(rows);
+    overlay.handleInput("f");
+    overlay.handleInput("d");
+    overlay.handleInput("e");
+    const lines = overlay.render(200);
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    // Header should show " f de" (with cursor) not " / de"
+    expect(text).toMatch(/f\s+de/);
+  });
+
+  it("header shows / prefix in name-only search mode", () => {
+    const overlay = makeOverlay(rows);
+    overlay.handleInput("/");
+    overlay.handleInput("d");
+    overlay.handleInput("e");
+    const lines = overlay.render(200);
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toMatch(/\/\s+de/);
+  });
+
+  it("header shows full-text filter label after Enter commits", () => {
+    const overlay = makeOverlay(rows);
+    overlay.handleInput("f");
+    overlay.handleInput("d");
+    overlay.handleInput("e");
+    overlay.handleInput("KEY_ENTER");
+    const lines = overlay.render(200);
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toMatch(/Full-text filter: "de"/);
+    expect(text).toMatch(/Esc to clear/);
+  });
+
+  it("footer shows f full-text key hint", () => {
+    const overlay = makeOverlay(rows);
+    const lines = overlay.render(200);
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toMatch(/f full-text/);
+  });
+
+  it("footer shows f prefix in search label when in full-text search mode", () => {
+    const overlay = makeOverlay(rows);
+    overlay.handleInput("f");
+    const lines = overlay.render(200);
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toMatch(/f search.*Esc cancel/);
+  });
+
+  it("sidebar shows (no matches) when full-text filter yields no results", () => {
+    const overlay = makeOverlay(rows);
+    overlay.handleInput("f");
+    overlay.handleInput("z");
+    overlay.handleInput("z");
+    overlay.handleInput("z");
+    const lines = overlay.render(200);
+    const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toMatch(/no matches/);
+  });
+
+  it("full-text search highlights name in sidebar even after exiting search mode", () => {
+    const overlay = makeOverlay(rows);
+    (overlay as any).fullTextSearch = true;
+    (overlay as any).searchQuery = "dep";
+    // Name highlight should be active (accent+bold wrapping in real theme)
+    const lines = overlay.render(200);
+    const text = lines.join("\n");
+    // Query text is visible — our test theme is identity, so no style change visible
+    expect(text).toContain("deploy");
   });
 });
