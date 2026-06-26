@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.2 — 2026-06-26
+
+### Added
+- **Help modal (`?`)** — press `?` anywhere in the overlay (except over a
+  confirm modal) to open a bordered, centered keybindings reference. Scroll
+  with `↑/↓` or `k/j`; close with `?`, `Esc`, or `q`. The modal auto-sizes to
+  the widest key/description and is tappable from search mode too. The footer
+  now advertises `? help`.
+- 8 new tests (220 total, up from 212)
+
+## 0.8.1 — 2026-06-26
+
+### Added
+- **Yank body to clipboard** — press `y` (or `Y`) in the overlay to copy the
+  current skill's full `SKILL.md` body (everything after the YAML frontmatter)
+  to the system clipboard. A notification confirms the copy. Uses pi's
+  cross-platform `copyToClipboard` (native addon / `pbcopy` / `wl-copy` /
+  `xclip` / OSC 52 fallbacks).
+
+---
+
 ## 0.8.0 — 2026-06-25
 
 ### Added

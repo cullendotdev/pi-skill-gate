@@ -127,6 +127,8 @@ export class SkillDetailOverlay {
   private projectName?: string;
   private hasProject: boolean;
   private pendingConfirm: PendingConfirm | null = null;
+  private showHelp = false;
+  private helpScroll = 0;
 
   onClose?: () => void;
   onToggle?: (name: string, state: ToggleState) => void;
@@ -135,6 +137,8 @@ export class SkillDetailOverlay {
   onEnableAll?: (names: string[]) => void;
   onDisableAll?: (names: string[]) => void;
   onResetScope?: () => void;
+  /** Yank (copy) the current skill's SKILL.md body to the clipboard. */
+  onYank?: (name: string, body: string) => void;
 
   constructor(rows: RowData[], initialIdx: number, getTerminalRows: () => number, theme: SkillGateTheme, editingScope: EditScope, projectName?: string, hasProject = false) {
     this.rows = rows;
@@ -171,6 +175,29 @@ export class SkillDetailOverlay {
         return;
       }
       return; // ignore everything else while modal is open
+    }
+
+    // ── help mode: ? toggles; Esc/?/q closes; ↑↓/k/j scroll ──
+    if (data === "?") {
+      this.showHelp = !this.showHelp;
+      this.helpScroll = 0;
+      return;
+    }
+    if (this.showHelp) {
+      if (matchesKey(data, Key.escape) || data === "q" || data === "Q" || data === "?") {
+        this.showHelp = false;
+        this.helpScroll = 0;
+        return;
+      }
+      if (matchesKey(data, Key.up) || data === "k") {
+        this.helpScroll = Math.max(0, this.helpScroll - 1);
+        return;
+      }
+      if (matchesKey(data, Key.down) || data === "j") {
+        this.helpScroll += 1;
+        return;
+      }
+      return; // ignore everything else while help is open
     }
 
     // ── search mode ──
@@ -313,6 +340,11 @@ export class SkillDetailOverlay {
     if (matchesKey(data, Key.enter)) {
       const row = this.rows[this.currentIdx];
       if (row) this.onInvoke?.(row.name);
+      return;
+    }
+    if (data === "y" || data === "Y") {
+      const row = this.rows[this.currentIdx];
+      if (row) this.onYank?.(row.name, readSkillBody(row.filePath));
       return;
     }
     if (data == "k") {
@@ -741,20 +773,31 @@ export class SkillDetailOverlay {
 
     // ── confirm modal overlay (replaces rows in the center of the overlay) ──
     if (this.pendingConfirm) {
-      const modal = this.renderModal(width);
-      const startRow = Math.max(0, Math.floor((lines.length - modal.height) / 2));
-      const colOffset = Math.max(0, Math.floor((width - modal.width) / 2));
-      const padLeft = " ".repeat(colOffset);
-      const padRight = " ".repeat(Math.max(0, width - colOffset - modal.width));
-      for (let i = 0; i < modal.lines.length; i++) {
-        const r = startRow + i;
-        if (r >= 0 && r < lines.length) {
-          lines[r] = padLeft + modal.lines[i] + padRight;
-        }
-      }
+      this.composeModal(lines, this.renderModal(width), width);
+    }
+
+    // ── help modal overlay (centered, scrollable) ──
+    if (this.showHelp) {
+      this.composeModal(lines, this.renderHelpModal(width, lines.length), width);
     }
 
     return lines;
+  }
+
+  /** Compose a pre-built modal box onto the rendered overlay lines, centered
+   *  both horizontally and vertically. Lines outside the modal are padded so
+   *  they remain plain background. */
+  private composeModal(lines: string[], modal: { lines: string[]; width: number; height: number }, width: number): void {
+    const startRow = Math.max(0, Math.floor((lines.length - modal.height) / 2));
+    const colOffset = Math.max(0, Math.floor((width - modal.width) / 2));
+    const padLeft = " ".repeat(colOffset);
+    const padRight = " ".repeat(Math.max(0, width - colOffset - modal.width));
+    for (let i = 0; i < modal.lines.length; i++) {
+      const r = startRow + i;
+      if (r >= 0 && r < lines.length) {
+        lines[r] = padLeft + modal.lines[i] + padRight;
+      }
+    }
   }
 
   /** Build the confirm modal box. Returns lines + dimensions for the
@@ -768,8 +811,8 @@ export class SkillDetailOverlay {
     // Title
     const title =
       pc.kind === "enableAll" ? "Confirm Enable All" :
-      pc.kind === "disableAll" ? "Confirm Disable All" :
-      "Confirm Reset";
+        pc.kind === "disableAll" ? "Confirm Disable All" :
+          "Confirm Reset";
 
     // Body lines (plain text; styled at render time)
     const bodyLines: string[] = [];
@@ -813,6 +856,147 @@ export class SkillDetailOverlay {
     return { lines, width: boxW, height: lines.length };
   }
 
+  /** Build the scrollable help modal listing every keybind. The box is
+   *  auto-sized to the widest row (capped to the overlay width) and centered;
+   *  when it would be taller than the overlay, ↑/↓/k/j scroll the content. */
+  private renderHelpModal(width: number, availableHeight: number): { lines: string[]; width: number; height: number } {
+    const T = this.theme;
+    const border = (s: string) => T.dim(s);
+    const padX = 1;
+    const keyGap = 2;
+
+    const sections: { title: string; entries: [string, string][] }[] = [
+      { title: "Navigation", entries: [
+        ["↑  ↓", "Move between skills (sidebar)"],
+        ["k  j", "Scroll skill body up / down"],
+        ["Home / End", "Jump to top / bottom of body"],
+      ] },
+      { title: "Search", entries: [
+        ["/", "Name-only search"],
+        ["f", "Full-text search (name + body)"],
+        ["↑  ↓", "Next / previous match (in search)"],
+        ["Enter", "Commit search (filter persists)"],
+        ["Backspace", "Delete last char"],
+        ["Esc", "Clear query / leave search"],
+      ] },
+      { title: "Skill actions", entries: [
+        ["Space", "Toggle current skill on/off"],
+        ["Enter", "Invoke skill (load /skill:name)"],
+        ["y", "Yank skill body to clipboard"],
+      ] },
+      { title: "View & scope", entries: [
+        ["b", "Toggle sidebar"],
+        ["u", "Toggle usage column"],
+        ["g", "Switch global ↔ project scope (project only)"],
+      ] },
+      { title: "Bulk (filtered set)", entries: [
+        ["a", "Enable all non-native-filtered skills"],
+        ["A", "Disable all non-native-filtered skills"],
+        ["r", "Reset all toggles in current scope"],
+      ] },
+      { title: "Confirm modal", entries: [
+        ["Enter / y", "Confirm the pending bulk action"],
+        ["Esc / n", "Cancel the pending bulk action"],
+      ] },
+      { title: "Global", entries: [
+        ["?", "Toggle this help"],
+        ["Esc", "Close the overlay"],
+      ] },
+    ];
+
+    // Style the body content lines (pre-baked with theme colors). These are
+    // rebuilt whenever invalidate() runs (e.g. theme change) because we
+    // re-call renderHelpModal on every render.
+    const titleText = "Skill Gate — Keybindings";
+    const footerText = "? Esc close · ↑↓ k j scroll";
+    const styledTitle = T.accent(T.bold(titleText));
+    const styledFooter = T.dim(footerText);
+
+    type BodyLine = { kind: "blank" | "header" | "entry"; key?: string; desc?: string; text?: string };
+    const body: BodyLine[] = [];
+    body.push({ kind: "blank" });
+    for (const s of sections) {
+      body.push({ kind: "header", text: s.title });
+      for (const [k, d] of s.entries) body.push({ kind: "entry", key: k, desc: d });
+      body.push({ kind: "blank" });
+    }
+    body.push({ kind: "blank" });
+
+    // Auto-fit box width to widest content (capped to the overlay width).
+    let rawMax = Math.max(
+      visibleWidth(titleText),
+      visibleWidth(footerText),
+    );
+    for (const s of sections) {
+      rawMax = Math.max(rawMax, visibleWidth(s.title));
+      for (const [k, d] of s.entries) {
+        rawMax = Math.max(rawMax, visibleWidth(k) + keyGap + visibleWidth(d));
+      }
+    }
+    let innerW = rawMax + 2 * padX;
+    innerW = Math.min(innerW, Math.max(width - 2, 20));
+    const boxW = innerW + 2;
+
+    // Compute the key column width so descriptions align.
+    let keyCol = 0;
+    for (const s of sections) for (const [k] of s.entries) keyCol = Math.max(keyCol, visibleWidth(k));
+    // The entry line is `padX spaces + key + keyGap spaces + desc`. If it overflows
+    // innerW, wrap/truncate the description to fit.
+    const descMax = innerW - padX - keyCol - keyGap - padX;
+
+    // Build the content lines for the body, handling wrap/truncate of descriptions.
+    const contentLines: string[] = [];
+    const row = (content: string) => {
+      const vw = visibleWidth(content);
+      const padded = vw < innerW ? content + " ".repeat(innerW - vw) : truncateToWidth(content, innerW, "");
+      return border("│") + padded + border("│");
+    };
+    const horiz = (l: string, r: string) => border(l + "─".repeat(boxW - 2) + r);
+
+    // We render the box around content; for scrolling, only the inner content
+    // portion scrolls (top border + title pin, footer + bottom border pin).
+    const pinnedTopLines: string[] = [
+      horiz("┌", "┐"),
+      row(" ".repeat(padX) + styledTitle),
+      row(""),
+    ];
+    const pinnedBottomLines: string[] = [
+      row(""),
+      row(" ".repeat(padX) + styledFooter),
+      horiz("└", "┘"),
+    ];
+
+    for (const b of body) {
+      if (b.kind === "blank") {
+        contentLines.push(row(""));
+      } else if (b.kind === "header") {
+        contentLines.push(row(" ".repeat(padX) + T.accent(T.bold(b.text!))));
+      } else {
+        const keyPart = b.key! + " ".repeat(keyCol - visibleWidth(b.key!) + keyGap);
+        // Wrap the description to descMax, prefix each wrapped line with the
+        // key column (only the first line shows the key; continuation lines
+        // use blank space so descriptions stay aligned).
+        const descLines = descMax > 4 ? wrapText(b.desc!, descMax) : [truncateToWidth(b.desc!, Math.max(1, innerW - padX - keyCol - keyGap - padX))];
+        for (let i = 0; i < descLines.length; i++) {
+          const prefix = i === 0 ? keyPart : " ".repeat(keyCol + keyGap);
+          contentLines.push(row(" ".repeat(padX) + T.dim(prefix) + T.muted(descLines[i]!)));
+        }
+      }
+    }
+
+    // Determine the visible window into contentLines based on available height.
+    const pinnedH = pinnedTopLines.length + pinnedBottomLines.length;
+    const availInner = Math.max(0, availableHeight - pinnedH);
+    const visibleCount = Math.min(contentLines.length, availInner);
+    const maxScroll = Math.max(0, contentLines.length - visibleCount);
+    const start = Math.min(this.helpScroll, maxScroll);
+    if (this.helpScroll > maxScroll) this.helpScroll = maxScroll; // clamp
+    const window = contentLines.slice(start, start + visibleCount);
+
+    const lines = [...pinnedTopLines, ...window, ...pinnedBottomLines];
+    return { lines, width: boxW, height: lines.length };
+  }
+
   /** Render title bar + subtitle/search/scope header. Returns header line count. */
   private renderTopSection(innerW: number, lines: string[]): number {
     const T = this.theme;
@@ -839,7 +1023,11 @@ export class SkillDetailOverlay {
     }
     if (this.hasProject) {
       const otherScope = this.editingScope === "global" ? "project" : "global";
-      const scopeLabel = T.dim(`  Editing: ${this.editingScope}`) + T.muted(`  [g] edit ${otherScope}`);
+      let scopeColor = this.editingScope === "global" ? T.enabled : T.warning
+      const scopeLabel =
+        T.dim(`  Editing: `) +
+        scopeColor(this.editingScope) +
+        T.muted(`  [g] to edit ${otherScope}`);
       lines.push(borderLine(scopeLabel, innerW, T));
       return 1;
     }
@@ -920,28 +1108,27 @@ export class SkillDetailOverlay {
     // confirm modal is open, the modal itself shows the relevant key hints,
     // so the footer just shows neutral scroll/nav info.
     const hasMore = meta.bodyLength > meta.remaining;
-    const scopeKey = this.hasProject ? " · g scope" : "";
-    const bulkKeys = " · a enable all · A disable all · r reset";
-    const usageKey = " · u usage";
+    const bulkKeys = " · a A r bulk";
+    const helpKey = " · ? help";
     const searchKey = this.fullTextSearch ? "f" : "/";
     let left: string;
     if (this.searchMode) {
-      left = ` ${searchKey} search · Esc cancel · Enter confirm` + bulkKeys;
+      left = ` ${searchKey} search · Esc cancel · Enter confirm${helpKey}`;
     } else if (hasMore) {
       const pct = meta.maxOffset > 0 ? Math.round((this.scrollOffset / meta.maxOffset) * 100) : 0;
       const up = this.scrollOffset > 0 ? "↑" : " ";
       const endLine = Math.min(this.scrollOffset + meta.remaining, meta.bodyLength);
       const dn = endLine < meta.bodyLength ? "↓" : " ";
-      left = ` ${up} ${pct}% ${dn}  k/j scroll · Home/End · / search · f full-text · b sidebar${scopeKey}${bulkKeys}${usageKey} · enter invoke · Esc close`;
+      left = ` ${up} ${pct}% ${dn}  k/j scroll · space toggle · / search${bulkKeys}${helpKey} · enter invoke · Esc close`;
     } else {
-      left = ` ↑↓ skill · / search · f full-text · b sidebar${scopeKey}${bulkKeys}${usageKey} · enter invoke · Esc close`;
+      left = ` ↑↓ skills · space toggle · / search${bulkKeys}${helpKey} · enter invoke · Esc close`;
     }
     const idx = this.searchMode
       ? (() => {
-          const fi = this.getFilteredIndices();
-          const pos = fi.indexOf(this.currentIdx);
-          return this.theme.accent(`[${pos >= 0 ? pos + 1 : 0}/${fi.length}]`);
-        })()
+        const fi = this.getFilteredIndices();
+        const pos = fi.indexOf(this.currentIdx);
+        return this.theme.accent(`[${pos >= 0 ? pos + 1 : 0}/${fi.length}]`);
+      })()
       : this.theme.accent(`[${this.currentIdx + 1}/${this.rows.length}]`);
 
     // Wrap the left text, leaving room for the index on the last line.

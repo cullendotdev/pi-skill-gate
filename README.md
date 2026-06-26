@@ -16,6 +16,7 @@ Control which skills are injected into the initial system prompt with `/skill-ga
 
 - **Complete skill coverage** — uses pi's `ResourceLoader` API with dynamic directory discovery to match `/skill:` autocomplete (including extension-contributed, project-memory, and migrated package skills)
 - **Skill browser** — view the complete `SKILL.md` content (description, when-to-use, procedure, prompt body) for every skill with syntax-highlighted markdown rendering
+- **Yank body to clipboard** — press `y` to copy the current skill's full `SKILL.md` body to the clipboard for pasting elsewhere
 - **Toggle visibility** — enable or disable skills individually; disabled skills are excluded from the system prompt
 - **Search with highlighting** — `/` searches by skill name; `f` performs full-text search across names, descriptions, and SKILL.md bodies. Matching text is highlighted in the sidebar, description, and rendered prompt body
 - **Bulk actions with confirm modals** — enable/disable all visible skills at once (`a`/`A`, warning-bordered modal) or reset the current scope to defaults (`r`, error-bordered modal). Bulk respects the active search filter
@@ -64,10 +65,12 @@ Opens an overlay showing all discovered skills.
 | `k` `j` | Scroll prompt content |
 | `Home` `End` | Jump to top/bottom |
 | `Enter` | Invoke skill into chat (confirm selection in search mode and confirm modals) |
+| `y` | Yank (copy) the current skill's `SKILL.md` body to the clipboard |
 | `g` | Toggle editing scope (global ↔ project) — only in a project directory |
 | `a` | Open "Enable all" confirm modal (warning border) — respects active filter |
 | `A` | Open "Disable all" confirm modal (warning border) — respects active filter |
 | `r` | Open "Reset scope" confirm modal (error border) |
+| `?` | Open the keybindings help modal (scroll with `↑` `↓` / `k` `j`; close with `?`, `Esc`, or `q`) |
 | `Esc` | Close (cancel search when searching; clear active filter on first press; cancel confirm modal when open) |
 
 ### Confirm modals
@@ -78,6 +81,10 @@ Opens an overlay showing all discovered skills.
 - **`r` — Error border (red):** shows the scope that will be cleared and how many toggles will be removed. Use `Enter` or `y` to confirm, `Esc` or `n` to cancel.
 
 When the modal is open, all other keys (including `r`, arrows, `j`/`k`) are ignored so you can't accidentally double-confirm.
+
+### Help modal
+
+Press `?` anywhere in the overlay (except over a confirm modal) to open a centered, bordered keybindings reference. It auto-sizes to the widest key/description pair. Scroll with `↑` `↓` or `k` `j`; close with `?`, `Esc`, or `q`.
 
 ## Configuration
 

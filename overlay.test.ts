@@ -699,6 +699,38 @@ describe("SkillDetailOverlay.handleInput (normal mode)", () => {
     expect(invokedName).toBe("alpha-skill");
   });
 
+  it("yanks current skill body to clipboard on 'y'", () => {
+    const rows = makeRows();
+    const overlay = makeOverlay(rows, 0);
+    let yankedName = "";
+    let yankedBody = "";
+    overlay.onYank = (name, body) => {
+      yankedName = name;
+      yankedBody = body;
+    };
+    overlay.handleInput("y");
+    expect(yankedName).toBe("alpha-skill");
+    // Body is whatever readSkillBody yields for this row's filePath (cache-aware).
+    expect(yankedBody).toBe(readSkillBody(rows[0].filePath));
+  });
+
+  it("yanks current skill body on uppercase 'Y'", () => {
+    const rows = makeRows();
+    const overlay = makeOverlay(rows, 1); // beta-skill
+    let yankedName = "";
+    overlay.onYank = (name) => { yankedName = name; };
+    overlay.handleInput("Y");
+    expect(yankedName).toBe("beta-skill");
+  });
+
+  it("does not yank when rows is empty", () => {
+    const overlay = new SkillDetailOverlay([], 0, () => 40, T, "global");
+    let yanked = false;
+    overlay.onYank = () => { yanked = true; };
+    overlay.handleInput("y");
+    expect(yanked).toBe(false);
+  });
+
   it("scrolls down on 'j'", () => {
     const rows = makeRows();
     const overlay = makeOverlay(rows);
@@ -850,13 +882,16 @@ describe("SkillDetailOverlay.handleInput (bulk actions)", () => {
     expect((overlay as any).pendingConfirm).toBeNull();
   });
 
-  it("y on enableAll modal fires onEnableAll", () => {
+  it("y on enableAll modal fires onEnableAll (not yank)", () => {
     const overlay = makeOverlay(makeRows());
     let fired = false;
+    let yanked = false;
     overlay.onEnableAll = () => { fired = true; };
+    overlay.onYank = () => { yanked = true; };
     overlay.handleInput("a");
     overlay.handleInput("y");
     expect(fired).toBe(true);
+    expect(yanked).toBe(false);
     expect((overlay as any).pendingConfirm).toBeNull();
   });
 
@@ -1024,6 +1059,95 @@ describe("SkillDetailOverlay.handleInput (bulk actions)", () => {
     // No modal
     expect(text).not.toMatch(/Confirm Enable/);
     expect(text).not.toMatch(/Confirm Reset/);
+  });
+});
+
+//  Help modal (? key)
+
+describe("SkillDetailOverlay help modal (? key)", () => {
+  function makeOverlay(rows: RowData[], idx = 0, hasProject = false) {
+    return new SkillDetailOverlay(rows, idx, () => 40, T, "global", undefined, hasProject);
+  }
+
+  const strip = (lines: string[]) => lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+
+  it("? opens the help modal with a bordered box and title", () => {
+    const overlay = makeOverlay(makeRows());
+    overlay.handleInput("?");
+    const text = strip(overlay.render(80));
+    expect(text).toMatch(/Skill Gate — Keybindings/);
+    expect(text).toMatch(/┌/);
+    expect(text).toMatch(/└/);
+    expect(text).toMatch(/Navigation/);
+  });
+
+  it("? again closes the help modal", () => {
+    const overlay = makeOverlay(makeRows());
+    overlay.handleInput("?");
+    overlay.handleInput("?");
+    const text = strip(overlay.render(80));
+    expect(text).not.toMatch(/Skill Gate — Keybindings/);
+  });
+
+  it("Esc closes the help modal without closing the overlay", () => {
+    const overlay = makeOverlay(makeRows());
+    let closed = false;
+    overlay.onClose = () => { closed = true; };
+    overlay.handleInput("?");
+    overlay.handleInput("KEY_ESCAPE");
+    const text = strip(overlay.render(80));
+    expect(text).not.toMatch(/Skill Gate — Keybindings/);
+    expect(closed).toBe(false);
+  });
+
+  it("q closes the help modal", () => {
+    const overlay = makeOverlay(makeRows());
+    overlay.handleInput("?");
+    overlay.handleInput("q");
+    const text = strip(overlay.render(80));
+    expect(text).not.toMatch(/Skill Gate — Keybindings/);
+  });
+
+  it("while help is open, other keys are ignored (space/y/a do nothing)", () => {
+    const overlay = makeOverlay(makeRows());
+    const toggled: [string, string][] = [];
+    overlay.onToggle = (name, state) => toggled.push([name, state]);
+    overlay.handleInput("?");
+    overlay.handleInput("KEY_SPACE");
+    overlay.handleInput("y");
+    overlay.handleInput("a");
+    expect(toggled).toEqual([]);
+    // help still open
+    const text = strip(overlay.render(80));
+    expect(text).toMatch(/Skill Gate — Keybindings/);
+  });
+
+  it("j / ↓ scroll the help content so later sections become visible", () => {
+    const overlay = makeOverlay(makeRows());
+    overlay.handleInput("?");
+    const topText = strip(overlay.render(80));
+    expect(topText).toMatch(/Navigation/);
+    // "Global" header is near the bottom and out of view at the top.
+    expect(topText).not.toMatch(/Global/);
+    for (let i = 0; i < 15; i++) overlay.handleInput("j");
+    const scrolledText = strip(overlay.render(80));
+    expect(scrolledText).toMatch(/Global/);
+  });
+
+  it("? does nothing while a confirm modal is open", () => {
+    const overlay = makeOverlay(makeRows());
+    overlay.handleInput("a"); // open enable-all confirm
+    overlay.handleInput("?");  // ignored — confirm modal keeps input
+    const text = strip(overlay.render(80));
+    expect(text).toMatch(/Confirm Enable All/);
+    expect(text).not.toMatch(/Skill Gate — Keybindings/);
+  });
+
+  it("footer advertises the ? help key", () => {
+    const overlay = makeOverlay(makeRows());
+    const text = strip(overlay.render(80));
+    expect(text).toMatch(/\?/);
+    expect(text).toMatch(/help/);
   });
 });
 
@@ -1244,11 +1368,13 @@ describe("SkillDetailOverlay usage display", () => {
     expect(wBig).toBeGreaterThan(wSmall);
   });
 
-  it("footer shows u key hint", () => {
+  it("footer shows compact key hints (space toggle, bulk, ? help)", () => {
     const overlay = makeOverlay(usageRows);
     const lines = overlay.render(200);
     const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-    expect(text).toMatch(/u usage/);
+    expect(text).toMatch(/space toggle/);
+    expect(text).toMatch(/a A r bulk/);
+    expect(text).toMatch(/\? help/);
   });
 });
 
@@ -1543,11 +1669,13 @@ describe("SkillDetailOverlay header/footer (full-text)", () => {
     expect(text).toMatch(/Esc to clear/);
   });
 
-  it("footer shows f full-text key hint", () => {
+  it("footer shows compact key hints (space toggle, ? help)", () => {
     const overlay = makeOverlay(rows);
     const lines = overlay.render(200);
     const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-    expect(text).toMatch(/f full-text/);
+    expect(text).toMatch(/space toggle/);
+    expect(text).toMatch(/\? help/);
+    expect(text).toMatch(/\/ search/);
   });
 
   it("footer shows f prefix in search label when in full-text search mode", () => {

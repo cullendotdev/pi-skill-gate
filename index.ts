@@ -9,7 +9,7 @@
  */
 
 import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent";
-import { DefaultResourceLoader, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { copyToClipboard, DefaultResourceLoader, getAgentDir } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { homedir } from "node:os";
@@ -383,6 +383,14 @@ export default function (pi: ExtensionAPI) {
             overlay = new SkillDetailOverlay(rows, Math.max(0, initIdx), () => tui.terminal.rows, T, editingScope, projectName, !!projectPath);
             overlay.onClose = () => { done(null); resolve({ type: "close" }); };
             overlay.onInvoke = (name) => { done(null); resolve({ type: "invoke", name }); };
+            overlay.onYank = async (name, body) => {
+              try {
+                await copyToClipboard(body);
+                ctx.ui.notify(`Yanked ${name} body to clipboard`, "info");
+              } catch {
+                ctx.ui.notify(`Failed to copy ${name} body to clipboard`, "error");
+              }
+            };
             overlay.onToggle = (name, state) => {
               persistToggle(name, state, config, editingScope, projectPath);
               refreshSkill(name);
