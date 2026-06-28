@@ -13,8 +13,9 @@ import { copyToClipboard, DefaultResourceLoader, getAgentDir } from "@earendil-w
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { homedir } from "node:os";
+import { spawn } from "node:child_process";
 import type { EditScope, RowData, SkillAnalytics, SkillGateConfig, SkillGateTheme, SkillVisibility, ToggleState } from "./types.js";
-import { SkillDetailOverlay } from "./overlay.js";
+import { SkillDetailOverlay, invalidateAllSkillBodies } from "./overlay.js";
 
 // ── Config persistence ──
 
@@ -361,7 +362,9 @@ export default function (pi: ExtensionAPI) {
         let rows = buildRows();
 
         // Open the detail overlay directly
-        const outcome = await new Promise<{ type: "close" } | { type: "invoke"; name: string }>((resolve) => {
+        const outcome = await new Promise<
+          { type: "close" } | { type: "invoke"; name: string } | { type: "edit"; name: string; filePath: string }
+        >((resolve) => {
           let overlay: SkillDetailOverlay;
 
           /** Refresh effective state for one skill after a mutation. */
@@ -383,6 +386,7 @@ export default function (pi: ExtensionAPI) {
             overlay = new SkillDetailOverlay(rows, Math.max(0, initIdx), () => tui.terminal.rows, T, editingScope, projectName, !!projectPath);
             overlay.onClose = () => { done(null); resolve({ type: "close" }); };
             overlay.onInvoke = (name) => { done(null); resolve({ type: "invoke", name }); };
+            overlay.onEdit = (name, filePath) => { done(null); resolve({ type: "edit", name, filePath }); };
             overlay.onYank = async (name, body) => {
               try {
                 await copyToClipboard(body);
@@ -462,6 +466,44 @@ export default function (pi: ExtensionAPI) {
             ctx.ui.notify(`Loaded /skill:${outcome.name}`, "info");
             return;
           }
+          lastSkill = outcome.name;
+          continue;
+        }
+
+        if (outcome.type === "edit") {
+          // Launch $VISUAL / $EDITOR on the skill file. The overlay is already
+          // closed (onEdit called `done(null)`) — the editor will inherit the
+          // terminal because we use stdio: "inherit" and don't await. After
+          // it exits we re-open the overlay; the body cache is invalidated
+          // so the next read reflects any on-disk edits.
+          const editorCmd = process.env.VISUAL || process.env.EDITOR;
+          if (!editorCmd) {
+            ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
+            lastSkill = outcome.name;
+            continue;
+          }
+          if (!fs.existsSync(outcome.filePath)) {
+            ctx.ui.notify(`Skill file not found: ${outcome.filePath}`, "error");
+            lastSkill = outcome.name;
+            continue;
+          }
+          const [editor, ...editorArgs] = editorCmd.split(" ");
+          await new Promise<void>((resolve) => {
+            // Notify on stderr via a small footer-style message — but the TUI
+            // is paused while the editor owns the terminal, so we just rely
+            // on the spawn itself. If the editor binary is missing, the
+            // 'error' event fires and we resolve immediately.
+            const child = spawn(editor, [...editorArgs, outcome.filePath], {
+              stdio: "inherit",
+              shell: process.platform === "win32",
+            });
+            child.on("error", () => resolve());
+            child.on("close", () => resolve());
+          });
+          // Force a re-read of every skill body the next time the overlay
+          // renders — the user may have edited the file (or any of its
+          // siblings via a multi-file editor command).
+          invalidateAllSkillBodies();
           lastSkill = outcome.name;
           continue;
         }

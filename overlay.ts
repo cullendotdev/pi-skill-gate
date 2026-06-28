@@ -103,6 +103,16 @@ export function readSkillBody(filePath: string): string {
   return result;
 }
 
+/** Drop a single cached body (call after the file is edited on disk). */
+export function invalidateSkillBody(filePath: string): void {
+  _skillBodyCache.delete(filePath);
+}
+
+/** Drop every cached body (e.g. after the user edits any skill). */
+export function invalidateAllSkillBodies(): void {
+  _skillBodyCache.clear();
+}
+
 // ── Overlay ──
 
 /** State of the confirm modal shown for bulk actions. */
@@ -139,6 +149,10 @@ export class SkillDetailOverlay {
   onResetScope?: () => void;
   /** Yank (copy) the current skill's SKILL.md body to the clipboard. */
   onYank?: (name: string, body: string) => void;
+  /** Open the current skill's SKILL.md in $VISUAL / $EDITOR. The overlay
+   *  closes itself before the editor is launched; the host re-opens it
+   *  after the editor exits so the body cache is re-read from disk. */
+  onEdit?: (name: string, filePath: string) => void;
 
   constructor(rows: RowData[], initialIdx: number, getTerminalRows: () => number, theme: SkillGateTheme, editingScope: EditScope, projectName?: string, hasProject = false) {
     this.rows = rows;
@@ -345,6 +359,11 @@ export class SkillDetailOverlay {
     if (data === "y" || data === "Y") {
       const row = this.rows[this.currentIdx];
       if (row) this.onYank?.(row.name, readSkillBody(row.filePath));
+      return;
+    }
+    if (data === "o" || data === "O") {
+      const row = this.rows[this.currentIdx];
+      if (row) this.onEdit?.(row.name, row.filePath);
       return;
     }
     if (data == "k") {
@@ -883,6 +902,7 @@ export class SkillDetailOverlay {
         ["Space", "Toggle current skill on/off"],
         ["Enter", "Invoke skill (load /skill:name)"],
         ["y", "Yank skill body to clipboard"],
+        ["o", "Open skill file in $VISUAL / $EDITOR"],
       ] },
       { title: "View & scope", entries: [
         ["b", "Toggle sidebar"],
@@ -1119,9 +1139,9 @@ export class SkillDetailOverlay {
       const up = this.scrollOffset > 0 ? "↑" : " ";
       const endLine = Math.min(this.scrollOffset + meta.remaining, meta.bodyLength);
       const dn = endLine < meta.bodyLength ? "↓" : " ";
-      left = ` ${up} ${pct}% ${dn}  k/j scroll · space toggle · / search${bulkKeys}${helpKey} · enter invoke · Esc close`;
+      left = ` ${up} ${pct}% ${dn}  k/j scroll · space toggle · / search${bulkKeys}${helpKey} · o open · y yank · enter invoke · Esc close`;
     } else {
-      left = ` ↑↓ skills · space toggle · / search${bulkKeys}${helpKey} · enter invoke · Esc close`;
+      left = ` ↑↓ skills · space toggle · / search${bulkKeys}${helpKey} · o open · y yank · enter invoke · Esc close`;
     }
     const idx = this.searchMode
       ? (() => {

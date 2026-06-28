@@ -17,6 +17,7 @@ Control which skills are injected into the initial system prompt with `/skill-ga
 - **Complete skill coverage** — uses pi's `ResourceLoader` API with dynamic directory discovery to match `/skill:` autocomplete (including extension-contributed, project-memory, and migrated package skills)
 - **Skill browser** — view the complete `SKILL.md` content (description, when-to-use, procedure, prompt body) for every skill with syntax-highlighted markdown rendering
 - **Yank body to clipboard** — press `y` to copy the current skill's full `SKILL.md` body to the clipboard for pasting elsewhere
+- **Open in $EDITOR** — press `o` to open the current skill's `SKILL.md` in `$VISUAL` / `$EDITOR`. The overlay pauses, the editor takes over the terminal, and the body cache is invalidated on return so your edits show up immediately
 - **Toggle visibility** — enable or disable skills individually; disabled skills are excluded from the system prompt
 - **Search with highlighting** — `/` searches by skill name; `f` performs full-text search across names, descriptions, and SKILL.md bodies. Matching text is highlighted in the sidebar, description, and rendered prompt body
 - **Bulk actions with confirm modals** — enable/disable all visible skills at once (`a`/`A`, warning-bordered modal) or reset the current scope to defaults (`r`, error-bordered modal). Bulk respects the active search filter
@@ -66,6 +67,7 @@ Opens an overlay showing all discovered skills.
 | `Home` `End` | Jump to top/bottom |
 | `Enter` | Invoke skill into chat (confirm selection in search mode and confirm modals) |
 | `y` | Yank (copy) the current skill's `SKILL.md` body to the clipboard |
+| `o` | Open the current skill's `SKILL.md` in `$VISUAL` / `$EDITOR` (e.g. `vim`, `code --wait`). The body cache is invalidated on return so edits show up immediately. Respects editor arguments split on whitespace (e.g. `code --wait`). |
 | `g` | Toggle editing scope (global ↔ project) — only in a project directory |
 | `a` | Open "Enable all" confirm modal (warning border) — respects active filter |
 | `A` | Open "Disable all" confirm modal (warning border) — respects active filter |

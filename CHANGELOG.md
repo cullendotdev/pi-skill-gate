@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.0 — 2026-06-28
+
+### Added
+- **Open in \$EDITOR (`o`)** — press `o` in the overlay to open the current
+  skill's `SKILL.md` in `$VISUAL` / `$EDITOR`. The overlay closes, the editor
+  inherits the terminal (`stdio: "inherit"`), and on exit the overlay
+  re-opens with the body cache invalidated so any edits show up immediately.
+  Respects editor arguments split on whitespace (e.g. `code --wait`).
+  The footer now advertises `o open` and the help modal lists the binding.
+- 5 new tests (225 total, up from 220)
+
 ## 0.8.2 — 2026-06-26
 
 ### Added

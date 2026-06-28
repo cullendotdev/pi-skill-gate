@@ -341,6 +341,30 @@ describe("readSkillBody", () => {
     const body = readSkillBody("/fake/format.md");
     expect(body).toBe("**bold** and *italic* and `code`");
   });
+
+  it("invalidateSkillBody forces a re-read on next access", async () => {
+    const { invalidateSkillBody } = await import("./overlay.js");
+    vi.mocked(fs.readFileSync).mockReturnValueOnce("v1" as any).mockReturnValueOnce("v2" as any);
+
+    expect(readSkillBody("/fake/inv.md")).toBe("v1");
+    invalidateSkillBody("/fake/inv.md");
+    expect(readSkillBody("/fake/inv.md")).toBe("v2");
+  });
+
+  it("invalidateAllSkillBodies drops every cached body", async () => {
+    const { invalidateAllSkillBodies } = await import("./overlay.js");
+    vi.mocked(fs.readFileSync).mockReturnValue("x" as any);
+
+    readSkillBody("/fake/a.md");
+    readSkillBody("/fake/b.md");
+    expect(fs.readFileSync).toHaveBeenCalledTimes(2);
+
+    invalidateAllSkillBodies();
+    readSkillBody("/fake/a.md");
+    readSkillBody("/fake/b.md");
+    // Re-read both files after invalidation
+    expect(fs.readFileSync).toHaveBeenCalledTimes(4);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -729,6 +753,37 @@ describe("SkillDetailOverlay.handleInput (normal mode)", () => {
     overlay.onYank = () => { yanked = true; };
     overlay.handleInput("y");
     expect(yanked).toBe(false);
+  });
+
+  it("opens current skill in editor on 'o'", () => {
+    const rows = makeRows();
+    const overlay = makeOverlay(rows, 0);
+    let editName = "";
+    let editPath = "";
+    overlay.onEdit = (name, filePath) => {
+      editName = name;
+      editPath = filePath;
+    };
+    overlay.handleInput("o");
+    expect(editName).toBe("alpha-skill");
+    expect(editPath).toBe(rows[0].filePath);
+  });
+
+  it("opens current skill in editor on uppercase 'O'", () => {
+    const rows = makeRows();
+    const overlay = makeOverlay(rows, 1); // beta-skill
+    let editName = "";
+    overlay.onEdit = (name) => { editName = name; };
+    overlay.handleInput("O");
+    expect(editName).toBe("beta-skill");
+  });
+
+  it("does not fire onEdit when rows is empty", () => {
+    const overlay = new SkillDetailOverlay([], 0, () => 40, T, "global");
+    let edited = false;
+    overlay.onEdit = () => { edited = true; };
+    overlay.handleInput("o");
+    expect(edited).toBe(false);
   });
 
   it("scrolls down on 'j'", () => {
