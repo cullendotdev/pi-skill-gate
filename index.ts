@@ -226,10 +226,24 @@ let cachedSkills: Skill[] = [];
 
 // ── System prompt injection ──
 
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 export function buildVisibleBlock(rows: SkillVisibility[]): string | null {
   const visible = rows.filter((r) => !r.disableModelInvocation && r.state === "enabled");
   if (visible.length === 0) return null;
-  return `<available_skills>\n${visible.map((r) => `- ${r.name}: ${r.description}`).join("\n")}\n</available_skills>`;
+  const skills = visible.map((r) => `  <skill>
+    <name>${escapeXml(r.name)}</name>
+    <description>${escapeXml(r.description)}</description>
+    <location>${escapeXml(r.filePath)}</location>
+  </skill>`).join("\n");
+  return `<available_skills>\n${skills}\n</available_skills>`;
 }
 
 // ── Theme factory ──
@@ -306,6 +320,7 @@ export default function (pi: ExtensionAPI) {
       return {
         name: s.name,
         description: s.description,
+        filePath: s.filePath,
         disableModelInvocation: s.disableModelInvocation,
         state,
       };

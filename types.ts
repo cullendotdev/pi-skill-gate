@@ -34,6 +34,7 @@ export interface SkillVisibility {
   name: string;
   state: ToggleState;
   description: string;
+  filePath: string;
   disableModelInvocation: boolean;
 }
 
