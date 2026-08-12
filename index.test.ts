@@ -463,6 +463,7 @@ describe("buildVisibleBlock", () => {
       {
         name: "alpha",
         description: "First skill",
+        filePath: "/skills/alpha/SKILL.md",
         disableModelInvocation: false,
         state: "disabled",
       },
@@ -475,6 +476,7 @@ describe("buildVisibleBlock", () => {
       {
         name: "alpha",
         description: "First skill",
+        filePath: "/skills/alpha/SKILL.md",
         disableModelInvocation: true,
         state: "enabled",
       },
@@ -485,15 +487,16 @@ describe("buildVisibleBlock", () => {
   it("formats correct <available_skills> XML block for a single skill", () => {
     const rows: SkillVisibility[] = [
       {
-        name: "test-skill",
-        description: "Does something useful",
+        name: "test&skill",
+        description: "Does <something> \"useful\"",
+        filePath: "/skills/a&b/SKILL.md",
         disableModelInvocation: false,
         state: "enabled",
       },
     ];
     const block = buildVisibleBlock(rows);
     expect(block).toBe(
-      "<available_skills>\n- test-skill: Does something useful\n</available_skills>"
+      "<available_skills>\n  <skill>\n    <name>test&amp;skill</name>\n    <description>Does &lt;something&gt; &quot;useful&quot;</description>\n    <location>/skills/a&amp;b/SKILL.md</location>\n  </skill>\n</available_skills>"
     );
   });
 
@@ -502,25 +505,28 @@ describe("buildVisibleBlock", () => {
       {
         name: "alpha",
         description: "Alpha skill",
+        filePath: "/skills/alpha/SKILL.md",
         disableModelInvocation: false,
         state: "enabled",
       },
       {
         name: "beta",
         description: "Beta skill",
+        filePath: "/skills/beta/SKILL.md",
         disableModelInvocation: false,
         state: "enabled",
       },
       {
         name: "gamma",
         description: "Gamma skill",
+        filePath: "/skills/gamma/SKILL.md",
         disableModelInvocation: false,
         state: "disabled",
       },
     ];
     const block = buildVisibleBlock(rows);
     expect(block).toBe(
-      "<available_skills>\n- alpha: Alpha skill\n- beta: Beta skill\n</available_skills>"
+      "<available_skills>\n  <skill>\n    <name>alpha</name>\n    <description>Alpha skill</description>\n    <location>/skills/alpha/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>beta</name>\n    <description>Beta skill</description>\n    <location>/skills/beta/SKILL.md</location>\n  </skill>\n</available_skills>"
     );
     // gamma is disabled and should be excluded
     expect(block).not.toContain("gamma");
@@ -531,12 +537,14 @@ describe("buildVisibleBlock", () => {
       {
         name: "visible-skill",
         description: "I am visible",
+        filePath: "/skills/visible/SKILL.md",
         disableModelInvocation: false,
         state: "enabled",
       },
       {
         name: "hidden-skill",
         description: "I should be hidden",
+        filePath: "/skills/hidden/SKILL.md",
         disableModelInvocation: true,
         state: "enabled",
       },
@@ -551,13 +559,14 @@ describe("buildVisibleBlock", () => {
       {
         name: "minimal",
         description: "",
+        filePath: "/skills/minimal/SKILL.md",
         disableModelInvocation: false,
         state: "enabled",
       },
     ];
     const block = buildVisibleBlock(rows);
     expect(block).toBe(
-      "<available_skills>\n- minimal: \n</available_skills>"
+      "<available_skills>\n  <skill>\n    <name>minimal</name>\n    <description></description>\n    <location>/skills/minimal/SKILL.md</location>\n  </skill>\n</available_skills>"
     );
   });
 });
