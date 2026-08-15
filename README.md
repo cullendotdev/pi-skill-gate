@@ -90,14 +90,16 @@ Press `?` anywhere in the overlay (except over a confirm modal) to open a center
 
 ## Configuration
 
-`skill-gate.json` at `~/.pi/agent/config/skill-gate.json` is created automatically. Only `"enabled"` keys are persisted; `"disabled"` is the default.
+`skill-gate.json` at `~/.pi/agent/config/skill-gate.json` is created automatically. Skills default to `"disabled"` for backward compatibility. Set `defaultState` to `"enabled"` to keep skills visible unless explicitly disabled.
+
+Only states that differ from `defaultState` are persisted.
 
 ### Global skills
 
 ```json
 {
+  "defaultState": "enabled",
   "skills": {
-    "code-review": "enabled",
     "blueprint": "disabled"
   }
 }
@@ -129,7 +131,7 @@ In this example, `my-react-app` inherits `code-review` from global, overrides `d
 Redundant project entries (where the project toggle matches the global effective state) are automatically removed to keep the config clean.
 
 > [!WARNING]
-> Corrupted JSON resets all toggles to disabled.
+> Corrupted JSON falls back to the default-disabled configuration.
 
 ### Usage analytics
 
@@ -177,7 +179,7 @@ input hook (pi.on("input", ...))
 
 ### State resolution
 
-Effective state is resolved per-skill: **project override** → **global** → **disabled** (default). The `before_agent_start` hook passes `ctx.cwd` as the project path, so per-project toggles take effect automatically when running an agent from that directory.
+Effective state is resolved per-skill: **project override** → **global** → **`defaultState`** (defaults to `"disabled"`). The `before_agent_start` hook passes `ctx.cwd` as the project path, so per-project toggles take effect automatically when running an agent from that directory.
 
 ### Editing scope
 

@@ -43,7 +43,14 @@ export function loadConfig(): SkillGateConfig {
   } else {
     try {
       const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
-      parsed = { skills: raw.skills || {}, projects: raw.projects || {} };
+      const defaultState = raw.defaultState === "enabled" || raw.defaultState === "disabled"
+        ? raw.defaultState
+        : undefined;
+      parsed = {
+        ...(defaultState ? { defaultState } : {}),
+        skills: raw.skills || {},
+        projects: raw.projects || {},
+      };
     } catch {
       console.warn(`[skill-gate] Failed to parse ${CONFIG_PATH} — using empty config`);
       parsed = { skills: {}, projects: {} };
@@ -60,7 +67,7 @@ export function saveConfig(c: SkillGateConfig): void {
   cachedConfig = c;
 }
 
-/** Resolve effective state: project override → global → default "disabled". */
+/** Resolve effective state: project override → global → configured default. */
 export function loadEffectiveState(name: string, config: SkillGateConfig, projectPath?: string): { state: ToggleState; source: "global" | "project" | "default" } {
   if (projectPath) {
     const proj = config.projects?.[projectPath]?.skills?.[name];
@@ -68,14 +75,14 @@ export function loadEffectiveState(name: string, config: SkillGateConfig, projec
   }
   const raw = config.skills[name];
   if (raw === "enabled" || raw === "disabled") return { state: raw, source: "global" };
-  return { state: "disabled", source: "default" };
+  return { state: config.defaultState ?? "disabled", source: "default" };
 }
 
 /** Persist a toggle to the given scope. Cleans up redundant project overrides
  *  (entries that match the global effective state are removed). */
 export function persistToggle(name: string, value: ToggleState, config: SkillGateConfig, scope: EditScope, projectPath?: string): void {
   if (scope === "global") {
-    if (value === "disabled") {
+    if (value === (config.defaultState ?? "disabled")) {
       delete config.skills[name];
     } else {
       config.skills[name] = value;
@@ -85,7 +92,7 @@ export function persistToggle(name: string, value: ToggleState, config: SkillGat
     if (!config.projects[projectPath]) config.projects[projectPath] = { skills: {} };
     const proj = config.projects[projectPath];
     // If the new value matches what global would give, remove the override (clean).
-    const globalEff = config.skills[name] === "enabled" ? "enabled" : "disabled";
+    const globalEff = config.skills[name] ?? config.defaultState ?? "disabled";
     if (value === globalEff) {
       delete proj.skills[name];
     } else {
@@ -111,8 +118,9 @@ export function persistBulkToggle(
 ): number {
   let applied = 0;
   if (scope === "global") {
+    const defaultState = config.defaultState ?? "disabled";
     for (const name of names) {
-      if (value === "disabled") {
+      if (value === defaultState) {
         if (config.skills[name] !== undefined) {
           delete config.skills[name];
           applied++;
@@ -127,7 +135,7 @@ export function persistBulkToggle(
     if (!config.projects[projectPath]) config.projects[projectPath] = { skills: {} };
     const proj = config.projects[projectPath];
     for (const name of names) {
-      const globalEff = config.skills[name] === "enabled" ? "enabled" : "disabled";
+      const globalEff = config.skills[name] ?? config.defaultState ?? "disabled";
       if (value === globalEff) {
         if (proj.skills[name] !== undefined) {
           delete proj.skills[name];
@@ -363,7 +371,7 @@ export default function (pi: ExtensionAPI) {
           disableModelInvocation: s.disableModelInvocation,
           state: stateMap.get(s.name)!,
           source: sourceMap.get(s.name)!,
-          globalEnabled: config.skills[s.name] === "enabled",
+          globalEnabled: loadEffectiveState(s.name, config).state === "enabled",
           usageCount: analytics.counts[s.name] || 0,
         }));
         data.sort((a, b) => a.name.localeCompare(b.name));
@@ -391,7 +399,7 @@ export default function (pi: ExtensionAPI) {
             if (row) {
               row.state = state;
               row.source = source;
-              row.globalEnabled = config.skills[name] === "enabled";
+              row.globalEnabled = loadEffectiveState(name, config).state === "enabled";
             }
           };
 
