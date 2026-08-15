@@ -5,6 +5,7 @@ export type EditScope = "global" | "project";
 
 export interface ProjectSkillConfig { skills: Record<string, ToggleState>; }
 export interface SkillGateConfig {
+  defaultState?: ToggleState;
   skills: Record<string, ToggleState>;
   projects: Record<string, ProjectSkillConfig>;
 }

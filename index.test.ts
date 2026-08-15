@@ -67,12 +67,14 @@ describe("loadConfig", () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
+        defaultState: "enabled",
         skills: { mySkill: "enabled", otherSkill: "disabled" },
         projects: { "/home/test-user/proj": { skills: { mySkill: "disabled" } } },
       }) as any
     );
     const cfg = loadConfig();
     expect(cfg).toEqual({
+      defaultState: "enabled",
       skills: { mySkill: "enabled", otherSkill: "disabled" },
       projects: { "/home/test-user/proj": { skills: { mySkill: "disabled" } } },
     });
@@ -188,6 +190,11 @@ describe("loadEffectiveState", () => {
     expect(res).toEqual({ state: "disabled", source: "default" });
   });
 
+  it("uses the configured default state", () => {
+    const res = loadEffectiveState("nonexistent", { ...cfg, defaultState: "enabled" });
+    expect(res).toEqual({ state: "enabled", source: "default" });
+  });
+
   it("absent projectPath falls through to global", () => {
     const res = loadEffectiveState("beta", cfg); // no projectPath given
     expect(res).toEqual({ state: "disabled", source: "global" });
@@ -233,6 +240,15 @@ describe("persistToggle", () => {
     expect(cfg.skills["missing"]).toBeUndefined();
   });
 
+  it("stores only exceptions when the default is enabled", () => {
+    const cfg: SkillGateConfig = { defaultState: "enabled", skills: {}, projects: {} };
+    persistToggle("mySkill", "disabled", cfg, "global");
+    expect(cfg.skills["mySkill"]).toBe("disabled");
+
+    persistToggle("mySkill", "enabled", cfg, "global");
+    expect(cfg.skills["mySkill"]).toBeUndefined();
+  });
+
   it("project enable: sets config.projects[path].skills[name]", () => {
     const cfg = emptyConfig();
     persistToggle("mySkill", "enabled", cfg, "project", "/home/test-user/proj");
@@ -270,6 +286,16 @@ describe("persistToggle", () => {
     expect(cfg.projects!["/home/test-user/proj"]!.skills["mySkill"]).toBe(
       "enabled"
     );
+  });
+
+  it("prunes a project override that matches an enabled default", () => {
+    const cfg: SkillGateConfig = {
+      defaultState: "enabled",
+      skills: {},
+      projects: { "/home/test-user/proj": { skills: { mySkill: "disabled" } } },
+    };
+    persistToggle("mySkill", "enabled", cfg, "project", "/home/test-user/proj");
+    expect(cfg.projects!["/home/test-user/proj"]).toBeUndefined();
   });
 
   it("prunes empty project section after last override removed", () => {
@@ -315,6 +341,14 @@ describe("persistBulkToggle", () => {
     const n = persistBulkToggle(["a", "b"], "disabled", cfg, "global");
     expect(n).toBe(2);
     expect(cfg.skills).toEqual({ c: "enabled", d: "enabled" });
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("stores disabled exceptions when the default is enabled", () => {
+    const cfg: SkillGateConfig = { defaultState: "enabled", skills: {}, projects: {} };
+    const n = persistBulkToggle(["a", "b"], "disabled", cfg, "global");
+    expect(n).toBe(2);
+    expect(cfg.skills).toEqual({ a: "disabled", b: "disabled" });
     expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
   });
 
