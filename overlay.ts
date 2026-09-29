@@ -677,14 +677,15 @@ export class SkillDetailOverlay {
     // ── budget: ensure total overlay height stays within bounds ──
     // Desc + prompt header(2) + body + borderline(1) + footer(N) = descLines + bodyLines + 3 + N
     // All of this must fit within contentBudget lines.
-    const MIN_BODY = 6; // minimum visible body lines
+    const MIN_BODY = 6; // preferred visible body lines
     const BODY_CHROME = 3 + footerLines; // prompt header(2) + borderline(1) + footer(N)
-    const maxDesc = contentBudget - MIN_BODY - BODY_CHROME;
+    // Clamp to >= 0: a negative Array#length throws RangeError and kills the agent.
+    const maxDesc = Math.max(0, contentBudget - MIN_BODY - BODY_CHROME);
     if (descLines.length > maxDesc) {
       descLines.length = maxDesc;
-      descLines[maxDesc - 1] = "  " + T.dim("…");
+      if (maxDesc > 0) descLines[maxDesc - 1] = "  " + T.dim("…");
     }
-    const remaining = Math.max(MIN_BODY, contentBudget - descLines.length - BODY_CHROME);
+    const remaining = Math.max(1, contentBudget - descLines.length - BODY_CHROME);
     const body = readSkillBody(row.filePath);
 
     // Loop: render, measure gutter + scroll, adjust contentW, repeat until stable.
@@ -1065,7 +1066,8 @@ export class SkillDetailOverlay {
     const overlayMax = Math.max(12, Math.floor(termRows * 0.8));
     const chrome = 3 + headerLines; // top border, title, header, separator
     const bottom = 1;               // bottom border
-    return Math.max(10, overlayMax - chrome - bottom);
+    const MIN_CONTENT = 5; // structural minimum: header(2) + body(1) + separator(1) + footer(1)
+    return Math.max(MIN_CONTENT, overlayMax - chrome - bottom);
   }
 
   /** Render body with sidebar. */
