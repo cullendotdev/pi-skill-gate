@@ -1763,3 +1763,39 @@ describe("SkillDetailOverlay header/footer (full-text)", () => {
     expect(text).toContain("deploy");
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+//  Short-terminal rendering (budget clamping)
+// ═══════════════════════════════════════════════════════════
+
+describe("SkillDetailOverlay short terminal (budget clamping)", () => {
+  function makeShortOverlay(termRows: number, rows: RowData[] = makeRows()) {
+    return new SkillDetailOverlay(rows, 0, () => termRows, T, "global", undefined, false);
+  }
+
+  it("does not throw when the footer wraps and the budget is tight", () => {
+    const overlay = makeShortOverlay(20);
+    expect(() => overlay.render(80)).not.toThrow();
+  });
+
+  it("renders every small terminal size without throwing", () => {
+    for (let termRows = 8; termRows <= 30; termRows += 2) {
+      for (const width of [60, 80, 100, 140]) {
+        const overlay = makeShortOverlay(termRows);
+        expect(
+          () => overlay.render(width),
+          `termRows=${termRows} width=${width}`,
+        ).not.toThrow();
+      }
+    }
+  });
+
+  it("never renders taller than 80% of the terminal", () => {
+    for (const termRows of [12, 16, 20, 24, 30]) {
+      const overlay = makeShortOverlay(termRows);
+      const lines = overlay.render(80);
+      const overlayMax = Math.max(12, Math.floor(termRows * 0.8));
+      expect(lines.length, `termRows=${termRows}`).toBeLessThanOrEqual(overlayMax);
+    }
+  });
+});
