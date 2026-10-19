@@ -246,6 +246,70 @@ export function buildVisibleBlock(rows: SkillVisibility[]): string | null {
   return `<available_skills>\n${skills}\n</available_skills>`;
 }
 
+/** The parts of pi's `before_agent_start` event the gate reads. */
+export interface GateEvent {
+  systemPrompt: string;
+  systemPromptOptions?: { skills?: Skill[]; sections?: Record<string, string | undefined>; customPrompt?: string };
+}
+
+/**
+ * Keep only the `<skill>` entries of `visible` skills in the `<available_skills>`
+ * blocks of a prompt text, matched by `<location>`, and drop a block left empty.
+ * Like the gate itself this is an allowlist: entries of skills the gate does not
+ * know are removed too. Block tags must sit on their own lines (as Pi and
+ * buildVisibleBlock emit them) and a block or entry cannot span another opening
+ * tag, so literal tags in prose are never treated as a catalog. Text outside the
+ * blocks is never changed; a text without removable entries comes back as is.
+ */
+export function keepVisibleSkills(text: string, visible: { filePath: string }[]): string {
+  const keep = visible.map((s) => `<location>${escapeXml(s.filePath)}</location>`);
+  return text.replace(
+    /(\n?^<available_skills>\n)((?:(?!<available_skills>)[\s\S])*?)(^<\/available_skills>$)/gm,
+    (block, open: string, body: string, close: string) => {
+      const kept = body.replace(/[ \t]*<skill>(?:(?!<skill>)[\s\S])*?<\/skill>\n?/g, (entry) =>
+        keep.some((loc) => entry.includes(loc)) ? entry : "");
+      if (kept === body) return block;
+      return kept.trim() === "" ? "" : open + kept + close;
+    },
+  );
+}
+
+/**
+ * Hide disabled skills from the system prompt.
+ *
+ * pi >= 0.86 renders the prompt from the mutable `systemPromptOptions`, so
+ * filtering `skills` there keeps the prompt structured (cache-friendly deltas)
+ * and returns nothing. A custom base prompt can list skills too (pi-subagents
+ * passes the parent's rendered prompt as `customPrompt`); only enabled entries
+ * are kept in it, in place. Older pi passes a read-only snapshot and a stale
+ * `systemPrompt` string; if a hidden skill is still in the text (also the case
+ * when another extension already forced the prompt), fall back to rewriting it.
+ */
+export function gateSystemPrompt(event: GateEvent, rows: SkillVisibility[]): { systemPrompt: string } | undefined {
+  const opts = event.systemPromptOptions;
+  if (Array.isArray(opts?.skills)) {
+    const enabled = new Set(rows.filter((r) => r.state === "enabled").map((r) => r.name));
+    const hidden = opts.skills.filter((s) => !enabled.has(s.name));
+    opts.skills = opts.skills.filter((s) => enabled.has(s.name));
+    // An earlier handler (e.g. pi-cache-optimizer) may have rendered the unfiltered list into the
+    // `skills` section, which overrides Pi's own; drop it so Pi re-renders from the filtered skills.
+    if (hidden.length > 0 && opts.sections?.skills) delete opts.sections.skills;
+    // A custom base prompt can list skills too (pi-subagents inherits the parent's render), including
+    // skills this session did not load; keep only enabled entries so none of them forces the prompt.
+    if (typeof opts.customPrompt === "string") opts.customPrompt = keepVisibleSkills(opts.customPrompt, rows.filter((r) => r.state === "enabled"));
+    if (!hidden.some((s) => event.systemPrompt.includes(`<location>${escapeXml(s.filePath)}</location>`))) return undefined;
+  }
+
+  let prompt = event.systemPrompt.replace(/\n<available_skills>[\s\S]*?<\/available_skills>\n/g, "\n");
+  const block = buildVisibleBlock(rows);
+  if (block) {
+    if (prompt.includes("</memory-policy>")) {
+      prompt = prompt.replace("</memory-policy>\n", `</memory-policy>\n${block}\n`);
+    } else { prompt += `\n${block}\n`; }
+  }
+  return { systemPrompt: prompt };
+}
+
 // ── Theme factory ──
 
 export function makeTheme(piTheme: any): SkillGateTheme {
@@ -325,14 +389,7 @@ export default function (pi: ExtensionAPI) {
         state,
       };
     });
-    let prompt = event.systemPrompt.replace(/\n<available_skills>[\s\S]*?<\/available_skills>\n/g, "\n");
-    const block = buildVisibleBlock(rows);
-    if (block) {
-      if (prompt.includes("</memory-policy>")) {
-        prompt = prompt.replace("</memory-policy>\n", `</memory-policy>\n${block}\n`);
-      } else { prompt += `\n${block}\n`; }
-    }
-    return { systemPrompt: prompt };
+    return gateSystemPrompt(event, rows);
   });
 
   // ── /skill-gate command ──

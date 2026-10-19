@@ -26,6 +26,8 @@ import {
   persistBulkToggle,
   resetScope,
   buildVisibleBlock,
+  gateSystemPrompt,
+  keepVisibleSkills,
   invalidateConfigCache,
   loadAnalytics,
   saveAnalytics,
@@ -33,6 +35,7 @@ import {
   invalidateAnalyticsCache,
 } from "./index.js";
 import type { SkillGateConfig, SkillAnalytics, SkillVisibility } from "./types.js";
+import type { Skill } from "@earendil-works/pi-coding-agent";
 
 const CONFIG_PATH = "/home/test-user/.pi/agent/config/skill-gate.json";
 const ANALYTICS_PATH = "/home/test-user/.pi/agent/config/skill-gate-analytics.json";
@@ -870,5 +873,113 @@ describe("analytics cache", () => {
     const a = loadAnalytics();
     expect(a.counts["hot"]).toBe(1);
     expect(fs.readFileSync).toHaveBeenCalledTimes(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+//  gateSystemPrompt
+// ═══════════════════════════════════════════════════════════
+
+describe("gateSystemPrompt", () => {
+  const skill = (name: string) =>
+    ({ name, description: `${name} desc`, filePath: `/skills/${name}/SKILL.md`, disableModelInvocation: false }) as Skill;
+  const row = (name: string, state: "enabled" | "disabled"): SkillVisibility => ({
+    name, state, description: `${name} desc`, filePath: `/skills/${name}/SKILL.md`, disableModelInvocation: false,
+  });
+  const render = (skills: Skill[]) =>
+    `intro\n<skills>\n<available_skills>\n${skills
+      .map((s) => `  <skill>\n    <name>${s.name}</name>\n    <location>${s.filePath}</location>\n  </skill>`)
+      .join("\n")}\n</available_skills>\n</skills>\n`;
+  const rows = [row("alpha", "enabled"), row("beta", "disabled")];
+
+  it("pi >= 0.86: filters systemPromptOptions.skills and does not force the prompt", () => {
+    const systemPromptOptions = { skills: [skill("alpha"), skill("beta")] };
+    // pi >= 0.86 renders event.systemPrompt live from the (mutable) options.
+    const event = { systemPromptOptions, get systemPrompt() { return render(systemPromptOptions.skills); } };
+    expect(gateSystemPrompt(event, rows)).toBeUndefined();
+    expect(systemPromptOptions.skills.map((s) => s.name)).toEqual(["alpha"]);
+    expect(event.systemPrompt).not.toContain("beta");
+  });
+
+  it("pi >= 0.86: hides skills unknown to the gate (default disabled), like the legacy path", () => {
+    const systemPromptOptions = { skills: [skill("alpha"), skill("gamma")] };
+    const event = { systemPromptOptions, get systemPrompt() { return render(systemPromptOptions.skills); } };
+    expect(gateSystemPrompt(event, rows)).toBeUndefined();
+    expect(systemPromptOptions.skills.map((s) => s.name)).toEqual(["alpha"]);
+  });
+
+  it("pi >= 0.86: drops a skills section an earlier handler rendered from the unfiltered list", () => {
+    const systemPromptOptions = {
+      skills: [skill("alpha"), skill("beta")],
+      sections: { skills: "## Skills\n- alpha: alpha desc\n- beta: beta desc" } as Record<string, string | undefined>,
+    };
+    // A custom skills section overrides Pi's own rendering, like pi-cache-optimizer's compressed list.
+    const event = { systemPromptOptions, get systemPrompt() { return systemPromptOptions.sections.skills ?? render(systemPromptOptions.skills); } };
+    expect(gateSystemPrompt(event, rows)).toBeUndefined();
+    expect(systemPromptOptions.sections.skills).toBeUndefined();
+    expect(event.systemPrompt).toContain("<name>alpha</name>");
+    expect(event.systemPrompt).not.toContain("beta");
+  });
+
+  it("pi >= 0.86: removes hidden skills from a custom base prompt instead of forcing (pi-subagents)", () => {
+    // pi-subagents passes the parent's rendered prompt, unfiltered when the parent is idle, as customPrompt.
+    const systemPromptOptions = {
+      skills: [skill("alpha"), skill("beta")],
+      customPrompt: "parent\n" + render([skill("alpha"), skill("beta")]) + "<sub_agent_context/>\n",
+    };
+    const event = { systemPromptOptions, get systemPrompt() { return systemPromptOptions.customPrompt + render(systemPromptOptions.skills); } };
+    expect(gateSystemPrompt(event, rows)).toBeUndefined();
+    expect(systemPromptOptions.customPrompt).toContain("<location>/skills/alpha/SKILL.md</location>");
+    expect(systemPromptOptions.customPrompt).toContain("<sub_agent_context/>");
+    expect(event.systemPrompt).not.toContain("beta");
+  });
+
+  it("pi >= 0.86: removes inherited entries of disabled skills the session did not load", () => {
+    const systemPromptOptions = {
+      skills: [skill("alpha"), skill("beta")],
+      customPrompt: render([skill("alpha"), skill("beta"), skill("gamma")]),
+    };
+    const event = { systemPromptOptions, get systemPrompt() { return systemPromptOptions.customPrompt + render(systemPromptOptions.skills); } };
+    expect(gateSystemPrompt(event, rows)).toBeUndefined();
+    expect(systemPromptOptions.customPrompt).toBe(render([skill("alpha")]));
+  });
+
+  it("keepVisibleSkills keeps prose with a literal <skill> before the catalog", () => {
+    const prose = "Each entry starts with <skill>.\nDo not deploy without approval.\n";
+    expect(keepVisibleSkills(prose + render([skill("beta"), skill("alpha")]), [skill("alpha")])).toBe(prose + render([skill("alpha")]));
+  });
+
+  it("keepVisibleSkills keeps prose with a literal <available_skills> before an all-hidden catalog", () => {
+    const prose = "The catalog starts with <available_skills>.\nDo not deploy without approval.\n";
+    expect(keepVisibleSkills(prose + render([skill("beta")]), [skill("alpha")])).toBe(prose + "intro\n<skills>\n</skills>\n");
+  });
+
+  it("keepVisibleSkills filters every catalog in the text", () => {
+    const text = render([skill("alpha"), skill("beta")]) + render([skill("beta")]);
+    expect(keepVisibleSkills(text, [skill("alpha")])).toBe(render([skill("alpha")]) + "intro\n<skills>\n</skills>\n");
+  });
+
+  it("keepVisibleSkills leaves text without removable entries byte-identical", () => {
+    const text = "Each entry starts with <skill>.\n" + render([skill("alpha")]);
+    expect(keepVisibleSkills(text, [skill("alpha")])).toBe(text);
+    expect(keepVisibleSkills("no catalog <available_skills> here", [])).toBe("no catalog <available_skills> here");
+  });
+
+  it("keepVisibleSkills drops an <available_skills> block left empty", () => {
+    expect(keepVisibleSkills(render([skill("beta")]), [skill("alpha")])).toBe("intro\n<skills>\n</skills>\n");
+  });
+
+  it("older pi (stale prompt string): falls back to rewriting the prompt text", () => {
+    const skills = [skill("alpha"), skill("beta")];
+    const event = { systemPromptOptions: { skills }, systemPrompt: render(skills) };
+    const result = gateSystemPrompt(event, rows);
+    expect(result?.systemPrompt).toContain("<name>alpha</name>");
+    expect(result?.systemPrompt).not.toContain("beta");
+  });
+
+  it("no systemPromptOptions (pi < 0.68): falls back to rewriting the prompt text", () => {
+    const result = gateSystemPrompt({ systemPrompt: render([skill("alpha"), skill("beta")]) }, rows);
+    expect(result?.systemPrompt).toContain("<name>alpha</name>");
+    expect(result?.systemPrompt).not.toContain("beta");
   });
 });

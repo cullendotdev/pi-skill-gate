@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **No more forced system prompt on pi >= 0.86** — the `before_agent_start`
+  hook now filters `event.systemPromptOptions.skills` instead of returning a
+  rewritten `systemPrompt`. pi re-renders the prompt itself, so it stays
+  structured (cache-friendly prompt/tool deltas) and enabled skills stay inside
+  pi's `<skills>` section. Older pi, or a prompt already forced by another
+  extension, falls back to the previous text rewrite.
+- **No forced prompt in subagents with an inherited prompt** — skill entries
+  listed in `systemPromptOptions.customPrompt` (pi-subagents passes the
+  parent's rendered prompt there, unfiltered once the parent turn has ended)
+  are filtered in place to the enabled skills, including entries of skills the
+  subagent did not load. Before, the gate found hidden skills in the text and
+  fell back to forcing a rewritten prompt. Only `<skill>` entries inside
+  `<available_skills>` blocks whose tags sit on their own lines are removed
+  (a block left empty is dropped); other prompt text is left as is.
+- 12 new tests (237 total, up from 225)
+
 ## 0.9.0 — 2026-06-28
 
 ### Added
